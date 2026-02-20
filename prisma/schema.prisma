@@ -1,0 +1,39 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum ActivityType {
+  TICKET
+  PROJECT
+  ADMIN
+  MEETING
+}
+
+model ActiveActivity {
+  id              String       @id @default(cuid())
+  userUpn         String
+  title           String
+  type            ActivityType
+  referenceId     String?
+  startedAt       DateTime
+  lastHeartbeatAt DateTime
+
+  @@index([userUpn])
+}
+
+model ActivityEvent {
+  id          String       @id @default(cuid())
+  userUpn     String
+  title       String
+  type        ActivityType
+  referenceId String?
+  startedAt   DateTime
+  endedAt     DateTime?
+
+  @@index([userUpn])
+}
