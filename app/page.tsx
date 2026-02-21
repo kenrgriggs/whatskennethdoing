@@ -1,3 +1,4 @@
+import { HistoryCard } from "@/components/HistoryCard";
 import { NowCard } from "@/components/NowCard";
 
 export default function Home() {
@@ -15,6 +16,7 @@ export default function Home() {
 
         <section className="grid md:grid-cols-3 gap-6">
           <NowCard />
+          <HistoryCard />
 
           <div className="rounded-xl border p-6 space-y-4">
             <h2 className="text-lg font-semibold">History</h2>
