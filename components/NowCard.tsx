@@ -14,12 +14,29 @@ type ActiveActivity = {
   lastHeartbeatAt: string;
 };
 
+function formatElapsed(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
 export function NowCard() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [current, setCurrent] = useState<ActiveActivity | null>(null);
   const [title, setTitle] = useState("");
   const [type, setType] = useState<ActivityType>("ADMIN");
+  const [nowTick, setNowTick] = useState(Date.now());
+
+  const elapsedLabel = useMemo(() => {
+    if (!current?.startedAt) return null;
+    const started = new Date(current.startedAt).getTime();
+    return formatElapsed(nowTick - started);
+  }, [current?.startedAt, nowTick]);
 
   const isActive = useMemo(() => {
     if (!current) return false;
@@ -68,6 +85,11 @@ export function NowCard() {
   }
 
   useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
     refresh();
   }, []);
 
@@ -83,6 +105,18 @@ export function NowCard() {
           title={isActive ? "Active" : "Inactive"}
         />
       </div>
+
+      {current ? (
+  <div className="space-y-1">
+    <div className="text-sm font-medium truncate">{current.title}</div>
+    <div className="text-xs text-muted-foreground">
+      {current.type}
+      {elapsedLabel ? ` • Elapsed ${elapsedLabel}` : ""}
+    </div>
+  </div>
+) : (
+  <p className="text-sm text-muted-foreground">No active activity yet.</p>
+)}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading...</p>

@@ -1,5 +1,6 @@
 import { HistoryCard } from "@/components/HistoryCard";
 import { NowCard } from "@/components/NowCard";
+import { AnalyticsCard } from "@/components/AnalyticsCard";
 
 export default function Home() {
   return (
@@ -17,20 +18,7 @@ export default function Home() {
         <section className="grid md:grid-cols-3 gap-6">
           <NowCard />
           <HistoryCard />
-
-          <div className="rounded-xl border p-6 space-y-4">
-            <h2 className="text-lg font-semibold">History</h2>
-            <p className="text-sm text-muted-foreground">
-              Recent activity timeline will appear here.
-            </p>
-          </div>
-
-          <div className="rounded-xl border p-6 space-y-4">
-            <h2 className="text-lg font-semibold">Analytics</h2>
-            <p className="text-sm text-muted-foreground">
-              Time breakdown and metrics coming soon.
-            </p>
-          </div>
+          <AnalyticsCard />
         </section>
       </div>
     </main>
