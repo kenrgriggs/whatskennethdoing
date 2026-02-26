@@ -1,54 +1,183 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getUserUpn } from "@/lib/auth";
+import { getSubjectUpn, getViewerRole } from "@/lib/auth";
+
+type Visibility = "PUBLIC" | "REDACTED";
+type TaskStatus = "NOT_STARTED" | "IN_PROGRESS" | "ON_HOLD" | "COMPLETED";
+
+const TASK_STATUSES = new Set<TaskStatus>([
+  "NOT_STARTED",
+  "IN_PROGRESS",
+  "ON_HOLD",
+  "COMPLETED",
+]);
+
+function redactTitle(label?: string) {
+  return label ?? "Busy - perfectly legal and secret activities";
+}
+
+function parseOptionalDate(value?: string) {
+  if (!value?.trim()) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function normalizeStatus(value?: string): TaskStatus {
+  const normalized = (value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+
+  if (TASK_STATUSES.has(normalized as TaskStatus)) {
+    return normalized as TaskStatus;
+  }
+
+  return "IN_PROGRESS";
+}
 
 export async function GET() {
-  const userUpn = getUserUpn();
-  const current = await prisma.activeActivity.findFirst({ where: { userUpn } });
+  const subjectUpn = getSubjectUpn();
+  const role = getViewerRole();
+
+  const current = await prisma.activeActivity.findFirst({
+    where: { userUpn: subjectUpn },
+  });
+
+  if (!current) return NextResponse.json({ current: null });
+
+  if (role !== "OWNER" && current.visibility === "REDACTED") {
+    return NextResponse.json({
+      current: {
+        ...current,
+        title: redactTitle(current.redactedLabel ?? undefined),
+        project: null,
+        notes: null,
+        referenceId: null,
+      },
+    });
+  }
+
   return NextResponse.json({ current });
 }
 
 export async function POST(req: Request) {
-  const userUpn = getUserUpn();
-  const body = await req.json();
-  const { title, type, referenceId } = body as {
-    title: string;
-    type: "TICKET" | "PROJECT" | "ADMIN" | "MEETING";
-    referenceId?: string;
-  };
+  try {
+    const role = getViewerRole();
+    if (role !== "OWNER") return new Response("Forbidden", { status: 403 });
 
-  const now = new Date();
+    const subjectUpn = getSubjectUpn();
+    const body = (await req.json()) as {
+      title?: string;
+      category?: string;
+      type?: string;
+      status?: string;
+      project?: string;
+      notes?: string;
+      startTime?: string;
+      endTime?: string;
+      referenceId?: string;
+      visibility?: Visibility;
+      redactedLabel?: string;
+    };
 
-  const active = await prisma.activeActivity.upsert({
-    where: { id: `${userUpn}:active` },
-    update: { title, type, referenceId, lastHeartbeatAt: now },
-    create: {
-      id: `${userUpn}:active`,
-      userUpn,
-      title,
-      type,
-      referenceId,
-      startedAt: now,
-      lastHeartbeatAt: now,
-    },
-  });
+    const title = body.title?.trim() ?? "";
+    const category = (body.category ?? body.type ?? "").trim();
+    const status = normalizeStatus(body.status);
+    const project = body.project?.trim();
+    const notes = body.notes?.trim();
+    const startTime = parseOptionalDate(body.startTime);
+    const endTime = parseOptionalDate(body.endTime);
+    const referenceId = body.referenceId?.trim();
+    const visibility = body.visibility;
+    const redactedLabel = body.redactedLabel?.trim();
+    const now = new Date();
+    const startedAt = startTime ?? now;
 
-  // Ensure there is an open event; if one exists, update title/type/referenceId.
-  const open = await prisma.activityEvent.findFirst({
-    where: { userUpn, endedAt: null },
-    orderBy: { startedAt: "desc" },
-  });
+    if (!title || !category) {
+      return new Response("Both title and category are required", { status: 400 });
+    }
 
-  if (open) {
-    await prisma.activityEvent.update({
-      where: { id: open.id },
-      data: { title, type, referenceId },
+    if (endTime && endTime.getTime() < startedAt.getTime()) {
+      return new Response("End time must be after start time", { status: 400 });
+    }
+
+    const active = await prisma.$transaction(async (tx) => {
+      // Close any currently open event when a new task is set.
+      await tx.activityEvent.updateMany({
+        where: { userUpn: subjectUpn, endedAt: null },
+        data: { endedAt: startedAt },
+      });
+
+      await tx.activityEvent.create({
+        data: {
+          id: crypto.randomUUID(),
+          userUpn: subjectUpn,
+          title,
+          type: category,
+          status,
+          project: project ?? null,
+          notes: notes ?? null,
+          referenceId: referenceId ?? null,
+          startedAt,
+          endedAt: endTime ?? null,
+          visibility: visibility ?? "PUBLIC",
+          redactedLabel: redactedLabel ?? null,
+        },
+      });
+
+      if (endTime) {
+        await tx.activeActivity.deleteMany({ where: { userUpn: subjectUpn } });
+        return null;
+      }
+
+      return tx.activeActivity.upsert({
+        where: { id: `${subjectUpn}:active` },
+        update: {
+          title,
+          type: category,
+          status,
+          project: project ?? null,
+          notes: notes ?? null,
+          referenceId: referenceId ?? null,
+          startedAt,
+          lastHeartbeatAt: now,
+          visibility: visibility ?? "PUBLIC",
+          redactedLabel: redactedLabel ?? null,
+        },
+        create: {
+          id: `${subjectUpn}:active`,
+          userUpn: subjectUpn,
+          title,
+          type: category,
+          status,
+          project: project ?? null,
+          notes: notes ?? null,
+          referenceId: referenceId ?? null,
+          startedAt,
+          lastHeartbeatAt: now,
+          visibility: visibility ?? "PUBLIC",
+          redactedLabel: redactedLabel ?? null,
+        },
+      });
     });
-  } else {
-    await prisma.activityEvent.create({
-      data: { userUpn, title, type, referenceId, startedAt: now },
-    });
+
+    return NextResponse.json({ active });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown server error";
+    if (message.includes("Unknown argument `status`")) {
+      return NextResponse.json(
+        {
+          error:
+            "Server restart required after schema update. Stop dev server, clear .next, run `npx prisma generate`, then `npm run dev`.",
+        },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: "Failed to save task. Check server logs for details." },
+      { status: 500 },
+    );
   }
-
-  return NextResponse.json({ active });
 }

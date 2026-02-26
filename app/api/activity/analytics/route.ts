@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getUserUpn } from "@/lib/auth";
-
-type ActivityType = "TICKET" | "PROJECT" | "ADMIN" | "MEETING";
+import { getSubjectUpn } from "@/lib/auth";
 
 function startOfTodayLocal() {
   const d = new Date();
@@ -24,57 +22,49 @@ function minutesBetween(start: Date, end: Date) {
 }
 
 export async function GET() {
-  const userUpn = getUserUpn();
+  const subjectUpn = getSubjectUpn();
   const now = new Date();
   const todayStart = startOfTodayLocal();
   const weekStart = startOfWeekLocal();
 
   const events = await prisma.activityEvent.findMany({
     where: {
-      userUpn,
+      userUpn: subjectUpn,
       startedAt: { gte: weekStart },
     },
     orderBy: { startedAt: "desc" },
     take: 500,
   });
 
-  const types: ActivityType[] = ["PROJECT", "TICKET", "MEETING", "ADMIN"];
-
-  const todayTotals: Record<ActivityType, number> = {
-    PROJECT: 0,
-    TICKET: 0,
-    MEETING: 0,
-    ADMIN: 0,
-  };
-
-  const weekTotals: Record<ActivityType, number> = {
-    PROJECT: 0,
-    TICKET: 0,
-    MEETING: 0,
-    ADMIN: 0,
-  };
+  const todayTotals: Record<string, number> = {};
+  const weekTotals: Record<string, number> = {};
 
   for (const ev of events) {
     const start = new Date(ev.startedAt);
     const end = ev.endedAt ? new Date(ev.endedAt) : now;
     const mins = minutesBetween(start, end);
+    const category = ev.type.trim() || "General";
 
-    // week totals (all in query are >= weekStart)
-    weekTotals[ev.type as ActivityType] =
-      (weekTotals[ev.type as ActivityType] ?? 0) + mins;
+    weekTotals[category] = (weekTotals[category] ?? 0) + mins;
 
-    // today totals
     if (start >= todayStart) {
-      todayTotals[ev.type as ActivityType] =
-        (todayTotals[ev.type as ActivityType] ?? 0) + mins;
+      todayTotals[category] = (todayTotals[category] ?? 0) + mins;
     }
   }
+
+  const categories = Array.from(
+    new Set([...Object.keys(todayTotals), ...Object.keys(weekTotals)]),
+  ).sort((a, b) => {
+    const byWeek = (weekTotals[b] ?? 0) - (weekTotals[a] ?? 0);
+    if (byWeek !== 0) return byWeek;
+    return a.localeCompare(b);
+  });
 
   return NextResponse.json({
     todayStart,
     weekStart,
     todayTotals,
     weekTotals,
-    types,
+    categories,
   });
 }

@@ -1,13 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-
-type ActivityType = "TICKET" | "PROJECT" | "ADMIN" | "MEETING";
+import { getCategoryLabel, getCategoryStyle } from "@/lib/activity-types";
 
 type AnalyticsResponse = {
-  todayTotals: Record<ActivityType, number>;
-  weekTotals: Record<ActivityType, number>;
-  types: ActivityType[];
+  todayTotals: Record<string, number>;
+  weekTotals: Record<string, number>;
+  categories: string[];
+};
+
+type AnalyticsCardProps = {
+  refreshToken?: number;
 };
 
 function formatMinutes(mins: number) {
@@ -18,7 +21,7 @@ function formatMinutes(mins: number) {
   return `${h}h ${m}m`;
 }
 
-export function AnalyticsCard() {
+export function AnalyticsCard({ refreshToken = 0 }: AnalyticsCardProps) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +43,7 @@ export function AnalyticsCard() {
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [refreshToken]);
 
   const todayTotalAll = useMemo(() => {
     if (!data) return 0;
@@ -56,13 +59,7 @@ export function AnalyticsCard() {
     <div className="rounded-xl border p-6 space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Analytics</h2>
-        <button
-          className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-50"
-          onClick={refresh}
-          disabled={loading}
-        >
-          Refresh
-        </button>
+        <h4 className="text-xs text-muted-foreground">Advanced Analytics coming soon...</h4>
       </div>
 
       {loading ? (
@@ -89,18 +86,32 @@ export function AnalyticsCard() {
           </div>
 
           <div className="space-y-2">
-            {data.types.map((t) => (
-              <div key={t} className="flex items-center justify-between text-sm">
-                <div className="text-muted-foreground">{t}</div>
-                <div className="font-medium">
-                  {formatMinutes(data.todayTotals[t] ?? 0)} /{" "}
-                  {formatMinutes(data.weekTotals[t] ?? 0)}
+            {data.categories.map((category) => {
+              const categoryStyle = getCategoryStyle(category);
+
+              return (
+                <div
+                  key={category}
+                  className="flex items-center justify-between text-sm gap-2"
+                >
+                  <span
+                    className="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium"
+                    style={categoryStyle.badgeStyle}
+                  >
+                    <span
+                      className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
+                      style={categoryStyle.dotStyle}
+                    />
+                    {getCategoryLabel(category)}
+                  </span>
+                  <div className="font-medium">
+                    {formatMinutes(data.todayTotals[category] ?? 0)} /{" "}
+                    {formatMinutes(data.weekTotals[category] ?? 0)}
+                  </div>
                 </div>
-              </div>
-            ))}
-            <div className="text-xs text-muted-foreground">
-              Format: today / week
-            </div>
+              );
+            })}
+            <div className="text-xs text-muted-foreground">Format: today / week</div>
           </div>
         </div>
       )}

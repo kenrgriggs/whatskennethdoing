@@ -7,33 +7,48 @@ datasource db {
   provider = "sqlite"
 }
 
-enum ActivityType {
-  TICKET
-  PROJECT
-  ADMIN
-  MEETING
+enum Visibility {
+  PUBLIC
+  REDACTED
+}
+
+enum TaskStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
 }
 
 model ActiveActivity {
-  id              String       @id @default(cuid())
+  id              String       @id
   userUpn         String
   title           String
-  type            ActivityType
+  type            String
+  status          TaskStatus   @default(IN_PROGRESS)
+  project         String?
+  notes           String?
   referenceId     String?
   startedAt       DateTime
   lastHeartbeatAt DateTime
+  visibility      Visibility @default(PUBLIC)
+  redactedLabel   String?  // optional custom message
 
   @@index([userUpn])
 }
 
 model ActivityEvent {
-  id          String       @id @default(cuid())
+  id          String       @id
   userUpn     String
   title       String
-  type        ActivityType
+  type        String
+  status      TaskStatus   @default(IN_PROGRESS)
+  project     String?
+  notes       String?
   referenceId String?
   startedAt   DateTime
   endedAt     DateTime?
+  visibility     Visibility @default(PUBLIC)
+  redactedLabel  String?  // optional custom message
 
   @@index([userUpn])
 }
