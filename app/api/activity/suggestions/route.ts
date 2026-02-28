@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getSubjectUpn, getViewerRole } from "@/lib/auth";
 
-type ProjectNotesPair = {
-  project: string;
+type TaskNotesPair = {
+  task: string;
   notes: string;
 };
 
@@ -25,22 +25,20 @@ function dedupeNonEmpty(values: string[]) {
   return out;
 }
 
-function buildProjectNotes(
-  values: Array<{ project: string | null; notes: string | null }>,
-) {
+function buildTaskNotes(values: Array<{ task: string | null; notes: string | null }>) {
   const seen = new Set<string>();
-  const out: ProjectNotesPair[] = [];
+  const out: TaskNotesPair[] = [];
 
   for (const value of values) {
-    const project = value.project?.trim() ?? "";
+    const task = value.task?.trim() ?? "";
     const notes = value.notes?.trim() ?? "";
-    if (!project || !notes) continue;
+    if (!task || !notes) continue;
 
-    const key = project.toLowerCase();
+    const key = task.toLowerCase();
     if (seen.has(key)) continue;
 
     seen.add(key);
-    out.push({ project, notes });
+    out.push({ task, notes });
   }
 
   return out.slice(0, 100);
@@ -56,13 +54,13 @@ export async function GET() {
     prisma.activityEvent.findMany({
       where: { userUpn: subjectUpn },
       orderBy: { startedAt: "desc" },
-      select: { title: true, type: true, project: true, notes: true },
+      select: { title: true, type: true, notes: true },
       take: 300,
     }),
     prisma.activeActivity.findFirst({
       where: { userUpn: subjectUpn },
       orderBy: { startedAt: "desc" },
-      select: { title: true, type: true, project: true, notes: true },
+      select: { title: true, type: true, notes: true },
     }),
   ]);
 
@@ -76,17 +74,10 @@ export async function GET() {
     ...events.map((event) => event.type),
   ]).slice(0, 100);
 
-  const projects = dedupeNonEmpty([
-    ...(current?.project ? [current.project] : []),
-    ...events
-      .map((event) => event.project)
-      .filter((project): project is string => Boolean(project)),
-  ]).slice(0, 100);
-
-  const projectNotes = buildProjectNotes([
-    ...(current ? [{ project: current.project, notes: current.notes }] : []),
-    ...events.map((event) => ({ project: event.project, notes: event.notes })),
+  const taskNotes = buildTaskNotes([
+    ...(current ? [{ task: current.title, notes: current.notes }] : []),
+    ...events.map((event) => ({ task: event.title, notes: event.notes })),
   ]);
 
-  return NextResponse.json({ titles, categories, projects, projectNotes });
+  return NextResponse.json({ titles, categories, taskNotes });
 }

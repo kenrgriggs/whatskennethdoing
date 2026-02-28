@@ -3,6 +3,9 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --scrollbar-track: rgba(24, 24, 27, 0.78);
+  --scrollbar-thumb: rgba(113, 113, 122, 0.82);
+  --scrollbar-thumb-hover: rgba(161, 161, 170, 0.9);
 }
 
 @theme inline {
@@ -23,4 +26,57 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Force native controls/scrollbars to dark mode for this app. */
+html,
+body {
+  color-scheme: dark;
+}
+
+/* Keep scrollbars in the same dark palette as the app UI. */
+html,
+body,
+.app-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+.app-scrollbar::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
+.app-scrollbar::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
+.app-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid var(--scrollbar-track);
+  background: var(--scrollbar-thumb);
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover,
+.app-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+html::-webkit-scrollbar-corner,
+body::-webkit-scrollbar-corner,
+.app-scrollbar::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
+html::-webkit-scrollbar-button,
+body::-webkit-scrollbar-button,
+.app-scrollbar::-webkit-scrollbar-button {
+  background: var(--scrollbar-track);
 }

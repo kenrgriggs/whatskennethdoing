@@ -72,7 +72,6 @@ export async function POST(req: Request) {
       category?: string;
       type?: string;
       status?: string;
-      project?: string;
       notes?: string;
       startTime?: string;
       endTime?: string;
@@ -84,7 +83,6 @@ export async function POST(req: Request) {
     const title = body.title?.trim() ?? "";
     const category = (body.category ?? body.type ?? "").trim();
     const status = normalizeStatus(body.status);
-    const project = body.project?.trim();
     const notes = body.notes?.trim();
     const startTime = parseOptionalDate(body.startTime);
     const endTime = parseOptionalDate(body.endTime);
@@ -116,7 +114,7 @@ export async function POST(req: Request) {
           title,
           type: category,
           status,
-          project: project ?? null,
+          project: null,
           notes: notes ?? null,
           referenceId: referenceId ?? null,
           startedAt,
@@ -137,7 +135,7 @@ export async function POST(req: Request) {
           title,
           type: category,
           status,
-          project: project ?? null,
+          project: null,
           notes: notes ?? null,
           referenceId: referenceId ?? null,
           startedAt,
@@ -151,7 +149,7 @@ export async function POST(req: Request) {
           title,
           type: category,
           status,
-          project: project ?? null,
+          project: null,
           notes: notes ?? null,
           referenceId: referenceId ?? null,
           startedAt,

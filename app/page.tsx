@@ -3,14 +3,13 @@
 import { useState } from "react";
 import { HistoryCard } from "@/components/HistoryCard";
 import { NowCard } from "@/components/NowCard";
-import { AnalyticsCard } from "@/components/AnalyticsCard";
 
 export default function Home() {
   const [refreshToken, setRefreshToken] = useState(0);
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <div className="max-w-5xl mx-auto px-6 py-12 space-y-10">
+      <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6 px-4 py-4 sm:px-6 sm:py-6">
         <header className="space-y-2">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-2">
@@ -32,15 +31,12 @@ export default function Home() {
           </div>
         </header>
 
-        <section className="grid gap-6 md:grid-cols-3">
-          <div className="md:col-span-3">
+        <section className="flex flex-col gap-6">
+          <div className="shrink-0">
             <NowCard refreshToken={refreshToken} />
           </div>
-          <div className="md:col-span-2">
+          <div>
             <HistoryCard refreshToken={refreshToken} />
-          </div>
-          <div className="md:col-span-1">
-            <AnalyticsCard refreshToken={refreshToken} />
           </div>
         </section>
       </div>
