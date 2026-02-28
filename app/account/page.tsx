@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+// Placeholder route for future authenticated account preferences.
 export default function AccountPage() {
   return (
     <main className="min-h-screen bg-background text-foreground">

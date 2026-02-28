@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getSubjectUpn } from "@/lib/auth";
 
+// Local-day boundaries are used so UI totals match what users expect in their own timezone.
 function startOfTodayLocal() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -21,6 +22,7 @@ function minutesBetween(start: Date, end: Date) {
   return Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
 }
 
+// Aggregates per-category minutes for today and this week.
 export async function GET() {
   const subjectUpn = getSubjectUpn();
   const now = new Date();

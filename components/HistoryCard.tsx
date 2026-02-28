@@ -1,8 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { getCategoryStyle, normalizeCategory } from "@/lib/activity-types";
 
+// HistoryCard responsibilities:
+// - load + render event history
+// - support sorting/filtering/paging/resizing
+// - provide in-cell editing with floating menus and autosave behavior
 type TaskStatus = "NOT_STARTED" | "IN_PROGRESS" | "ON_HOLD" | "COMPLETED";
 type SortDirection = "asc" | "desc";
 type DisplayDensity = "compact" | "comfort";
@@ -43,6 +48,40 @@ type EventDraft = {
 type HistoryCardProps = {
   refreshToken?: number;
 };
+
+type StatusMenuPosition = {
+  left: number;
+  top: number;
+  openUp: boolean;
+};
+
+type TableSettingsMenuKey =
+  | "recordsPerPage"
+  | "sortByColumn"
+  | "refreshFrequency";
+
+type SavedHistoryView = {
+  id: string;
+  name: string;
+  filters: Record<ColumnKey, string>;
+};
+
+type ViewDialogState =
+  | {
+      kind: "create";
+      draftName: string;
+      error: string | null;
+    }
+  | {
+      kind: "rename";
+      viewId: string;
+      draftName: string;
+      error: string | null;
+    }
+  | {
+      kind: "delete";
+      viewId: string;
+    };
 
 type ColumnDef = {
   key: ColumnKey;
@@ -178,6 +217,8 @@ const COLUMN_DEFS: ColumnDef[] = [
 ];
 
 const COLUMN_ORDER_STORAGE_KEY = "whatskennethdoing.history.columnOrder.v2";
+const HISTORY_VIEWS_STORAGE_KEY = "whatskennethdoing.history.savedViews.v1";
+const DEFAULT_VIEW_ID = "__all_tasks__";
 
 const COLUMN_BY_KEY = COLUMN_DEFS.reduce(
   (out, def) => {
@@ -204,6 +245,54 @@ const EMPTY_FILTERS = COLUMN_DEFS.reduce(
   },
   {} as Record<ColumnKey, string>,
 );
+
+function cloneFilters(filters: Partial<Record<ColumnKey, string>>) {
+  const next = { ...EMPTY_FILTERS };
+  for (const def of COLUMN_DEFS) {
+    const value = filters[def.key];
+    if (typeof value === "string") next[def.key] = value;
+  }
+  return next;
+}
+
+function areFiltersEqual(
+  a: Record<ColumnKey, string>,
+  b: Record<ColumnKey, string>,
+) {
+  for (const def of COLUMN_DEFS) {
+    if ((a[def.key] ?? "") !== (b[def.key] ?? "")) return false;
+  }
+  return true;
+}
+
+function normalizeSavedHistoryViews(candidate: unknown): SavedHistoryView[] {
+  if (!Array.isArray(candidate)) return [];
+
+  const out: SavedHistoryView[] = [];
+  const seen = new Set<string>();
+
+  for (const item of candidate) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const id = typeof record.id === "string" ? record.id.trim() : "";
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    if (!id || !name || seen.has(id)) continue;
+    seen.add(id);
+
+    const filtersCandidate =
+      record.filters && typeof record.filters === "object"
+        ? (record.filters as Partial<Record<ColumnKey, string>>)
+        : {};
+
+    out.push({
+      id,
+      name,
+      filters: cloneFilters(filtersCandidate),
+    });
+  }
+
+  return out;
+}
 
 function normalizeColumnOrder(candidate: unknown): ColumnKey[] {
   if (!Array.isArray(candidate)) return DEFAULT_COLUMN_ORDER;
@@ -329,6 +418,121 @@ function toEditableColumnKey(key: ColumnKey): EditableColumnKey {
   return key;
 }
 
+function renderColumnHeaderIcon(key: ColumnKey) {
+  const iconClassName = "h-3.5 w-3.5 shrink-0";
+
+  switch (key) {
+    case "title":
+      return (
+        <span className="inline-flex h-3.5 w-3.5 items-center justify-center text-[10px] font-semibold leading-none tracking-tight">
+          Aa
+        </span>
+      );
+    case "startedAt":
+      return (
+        <svg
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          <circle cx="10" cy="10" r="6.5" />
+          <path d="M10 6.5v3.8l2.8 1.5" />
+        </svg>
+      );
+    case "endedAt":
+      return (
+        <svg
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          <rect x="3.5" y="4.5" width="13" height="12" rx="2" />
+          <path d="M6.5 3v3M13.5 3v3M3.5 8h13" />
+          <path d="m7.7 12 1.7 1.7 2.9-3.2" />
+        </svg>
+      );
+    case "duration":
+      return (
+        <svg
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          <path d="M6.5 3.5h7M6.5 16.5h7" />
+          <path d="M7 3.5c.2 2.7 1.6 3.9 3 5 1.4 1.1 2.8 2.3 3 5" />
+          <path d="M13 3.5c-.2 2.7-1.6 3.9-3 5-1.4 1.1-2.8 2.3-3 5" />
+        </svg>
+      );
+    case "status":
+      return (
+        <svg
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          <path d="m5.5 7 4.5 5 4.5-5" />
+          <path d="m5.5 11 4.5 5 4.5-5" />
+        </svg>
+      );
+    case "project":
+      return (
+        <svg
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          <path d="M6 14 14 6" />
+          <path d="M8 6h6v6" />
+        </svg>
+      );
+    case "notes":
+      return (
+        <svg
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          <circle cx="10" cy="10" r="6.8" />
+          <path d="M10 6.8v6.4M6.8 10h6.4" />
+        </svg>
+      );
+    case "type":
+      return (
+        <svg
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          <path d="M10 16.5c3.8-1.6 6-4.5 6-8V5.3L10 3.5 4 5.3v3.2c0 3.5 2.2 6.4 6 8Z" />
+          <circle cx="10" cy="9.5" r="1.7" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
+
 export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   const [loading, setLoading] = useState(true);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
@@ -340,6 +544,11 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [openFilterKey, setOpenFilterKey] = useState<ColumnKey | null>(null);
   const [openStatusMenuId, setOpenStatusMenuId] = useState<string | null>(null);
+  const [statusMenuPosition, setStatusMenuPosition] =
+    useState<StatusMenuPosition | null>(null);
+  const [openCategoryMenuId, setOpenCategoryMenuId] = useState<string | null>(null);
+  const [categoryMenuPosition, setCategoryMenuPosition] =
+    useState<StatusMenuPosition | null>(null);
   const [columnOrder, setColumnOrder] = useState<ColumnKey[]>(DEFAULT_COLUMN_ORDER);
   const [draggingColumnKey, setDraggingColumnKey] = useState<ColumnKey | null>(
     null,
@@ -352,16 +561,28 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     key: EditableColumnKey;
   } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingKey, setEditingKey] = useState<EditableColumnKey | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>(
     DEFAULT_COLUMN_WIDTHS,
   );
   const [nowTick, setNowTick] = useState(Date.now());
   const [tableSettingsOpen, setTableSettingsOpen] = useState(false);
+  const [openTableSettingsMenu, setOpenTableSettingsMenu] =
+    useState<TableSettingsMenuKey | null>(null);
   const [recordsPerPage, setRecordsPerPage] = useState(DEFAULT_RECORDS_PER_PAGE);
   const [currentPage, setCurrentPage] = useState(1);
   const [refreshFrequencyMs, setRefreshFrequencyMs] = useState(0);
   const [displayDensity, setDisplayDensity] = useState<DisplayDensity>("compact");
+  const [savedViews, setSavedViews] = useState<SavedHistoryView[]>([]);
+  const [savedViewsLoaded, setSavedViewsLoaded] = useState(false);
+  const [activeViewId, setActiveViewId] = useState<string | null>(DEFAULT_VIEW_ID);
+  const [openViewMenuId, setOpenViewMenuId] = useState<string | null>(null);
+  const [viewMenuPosition, setViewMenuPosition] =
+    useState<StatusMenuPosition | null>(null);
+  const [viewDialog, setViewDialog] = useState<ViewDialogState | null>(null);
   const loadedColumnOrderRef = useRef(false);
+  const loadedSavedViewsRef = useRef(false);
+  const hydratedViewFromUrlRef = useRef(false);
 
   const resizingStateRef = useRef<{
     key: ColumnKey;
@@ -369,11 +590,60 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     startWidth: number;
   } | null>(null);
   const saveEditingRowIfNeededRef = useRef<() => Promise<void>>(async () => {});
+  const statusButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const categoryButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const viewMenuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const headerRowRef = useRef<HTMLTableRowElement | null>(null);
   const firstBodyRowRef = useRef<HTMLTableRowElement | null>(null);
+  const tableViewportRef = useRef<HTMLDivElement | null>(null);
   const [measuredHeaderRowHeight, setMeasuredHeaderRowHeight] = useState(0);
   const [measuredBodyRowHeight, setMeasuredBodyRowHeight] = useState(0);
+  const [tableHeightCompensation, setTableHeightCompensation] = useState(0);
 
+  function getStatusMenuPositionFromTrigger(
+    trigger: HTMLElement,
+  ): StatusMenuPosition {
+    const rect = trigger.getBoundingClientRect();
+    const menuWidth = 224;
+    const menuHeightEstimate = 230;
+    const viewportPadding = 8;
+    const horizontalMin = viewportPadding;
+    const horizontalMax = Math.max(
+      viewportPadding,
+      window.innerWidth - menuWidth - viewportPadding,
+    );
+    const left = Math.min(Math.max(rect.left, horizontalMin), horizontalMax);
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const openUp = spaceBelow < menuHeightEstimate && spaceAbove > spaceBelow;
+    const top = openUp ? rect.top - 6 : rect.bottom + 6;
+    return { left, top, openUp };
+  }
+
+  function getViewMenuPositionFromTrigger(
+    trigger: HTMLElement,
+  ): StatusMenuPosition {
+    const rect = trigger.getBoundingClientRect();
+    const menuWidth = 248;
+    const menuHeightEstimate = 280;
+    const viewportPadding = 8;
+    const horizontalMin = viewportPadding;
+    const horizontalMax = Math.max(
+      viewportPadding,
+      window.innerWidth - menuWidth - viewportPadding,
+    );
+    const left = Math.min(
+      Math.max(rect.left - menuWidth + rect.width, horizontalMin),
+      horizontalMax,
+    );
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const openUp = spaceBelow < menuHeightEstimate && spaceAbove > spaceBelow;
+    const top = openUp ? rect.top - 6 : rect.bottom + 6;
+    return { left, top, openUp };
+  }
+
+    // Reload canonical event data and reset drafts to server values.
   async function refresh() {
     setLoading(true);
     setError(null);
@@ -428,34 +698,30 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   }
 
   function startEditing(event: ActivityEvent, focusKey?: ColumnKey) {
+    const nextKey = toEditableColumnKey(focusKey ?? "title");
+
     setDrafts((previous) => ({
       ...previous,
       [event.id]: previous[event.id] ?? toDraft(event),
     }));
     setEditingId(event.id);
-    setOpenStatusMenuId(null);
-    if (focusKey) {
-      setEditFocusTarget({
-        id: event.id,
-        key: toEditableColumnKey(focusKey),
-      });
-    }
+    setEditingKey(nextKey);
+    setOpenStatusMenuId(nextKey === "status" ? event.id : null);
+    setOpenCategoryMenuId(null);
+    setEditFocusTarget({
+      id: event.id,
+      key: nextKey,
+    });
   }
 
-  function cancelEditing(event: ActivityEvent) {
-    setDrafts((previous) => ({
-      ...previous,
-      [event.id]: toDraft(event),
-    }));
-    setEditingId(null);
-    setOpenStatusMenuId(null);
-  }
-
+  // Persist one edited row and synchronize local event/draft state with API response.
   async function saveRow(event: ActivityEvent) {
     const draft = drafts[event.id];
     if (!draft || !rowHasChanges(event)) {
       setEditingId(null);
+      setEditingKey(null);
       setOpenStatusMenuId(null);
+        setOpenCategoryMenuId(null);
       return;
     }
 
@@ -502,7 +768,9 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         [updated.id]: toDraft(updated),
       }));
       setEditingId(null);
+      setEditingKey(null);
       setOpenStatusMenuId(null);
+        setOpenCategoryMenuId(null);
     } finally {
       setSavingById((previous) => ({ ...previous, [event.id]: false }));
     }
@@ -514,6 +782,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     const event = events.find((item) => item.id === editingId);
     if (!event) {
       setEditingId(null);
+      setEditingKey(null);
       return;
     }
     await saveRow(event);
@@ -570,6 +839,166 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
       ...previous,
       [key]: value,
     }));
+  }
+
+  function applySavedView(viewId: string) {
+    if (viewId === DEFAULT_VIEW_ID) {
+      setFilters(cloneFilters({}));
+      setActiveViewId(DEFAULT_VIEW_ID);
+      setOpenFilterKey(null);
+      return;
+    }
+
+    const view = savedViews.find((item) => item.id === viewId);
+    if (!view) return;
+    setFilters(cloneFilters(view.filters));
+    setActiveViewId(view.id);
+    setOpenFilterKey(null);
+  }
+
+  function getUniqueSavedViewName(baseName: string, excludeViewId?: string) {
+    const existingNames = new Set(
+      savedViews
+        .filter((item) => item.id !== excludeViewId)
+        .map((item) => item.name.toLowerCase()),
+    );
+    let nextName = baseName;
+    let suffix = 2;
+    while (existingNames.has(nextName.toLowerCase())) {
+      nextName = `${baseName} ${suffix}`;
+      suffix += 1;
+    }
+    return nextName;
+  }
+
+  function addSavedViewFromCurrentFilters() {
+    const existing = savedViews.find((item) => areFiltersEqual(item.filters, filters));
+    if (existing) {
+      setActiveViewId(existing.id);
+      return;
+    }
+
+    setViewDialog({
+      kind: "create",
+      draftName: `View ${savedViews.length + 1}`,
+      error: null,
+    });
+  }
+
+  function renameSavedView(viewId: string) {
+    const view = savedViews.find((item) => item.id === viewId);
+    if (!view) return;
+
+    setViewDialog({
+      kind: "rename",
+      viewId,
+      draftName: view.name,
+      error: null,
+    });
+  }
+
+  function submitViewDialog() {
+    if (!viewDialog) return;
+
+    if (viewDialog.kind === "delete") {
+      const targetId = viewDialog.viewId;
+      setSavedViews((previous) => previous.filter((item) => item.id !== targetId));
+
+      if (activeViewId === targetId) {
+        setFilters(cloneFilters({}));
+        setActiveViewId(DEFAULT_VIEW_ID);
+        setOpenFilterKey(null);
+      }
+
+      setViewDialog(null);
+      return;
+    }
+
+    const baseName = viewDialog.draftName.trim();
+    if (!baseName) {
+      setViewDialog((previous) => {
+        if (!previous || previous.kind === "delete") return previous;
+        return {
+          ...previous,
+          error: "Name is required.",
+        };
+      });
+      return;
+    }
+
+    const nextName = getUniqueSavedViewName(
+      baseName,
+      viewDialog.kind === "rename" ? viewDialog.viewId : undefined,
+    );
+
+    if (viewDialog.kind === "create") {
+      const nextView: SavedHistoryView = {
+        id:
+          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `view-${Date.now()}`,
+        name: nextName,
+        filters: cloneFilters(filters),
+      };
+
+      setSavedViews((previous) => [...previous, nextView]);
+      setActiveViewId(nextView.id);
+      setViewDialog(null);
+      return;
+    }
+
+    const targetId = viewDialog.viewId;
+    setSavedViews((previous) =>
+      previous.map((item) =>
+        item.id === targetId
+          ? {
+              ...item,
+              name: nextName,
+            }
+          : item,
+      ),
+    );
+    setViewDialog(null);
+  }
+
+  function duplicateSavedView(viewId: string) {
+    const view = savedViews.find((item) => item.id === viewId);
+    if (!view) return;
+
+    const nextView: SavedHistoryView = {
+      id:
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `view-${Date.now()}`,
+      name: getUniqueSavedViewName(`${view.name} Copy`),
+      filters: cloneFilters(view.filters),
+    };
+
+    setSavedViews((previous) => [...previous, nextView]);
+    setFilters(cloneFilters(nextView.filters));
+    setActiveViewId(nextView.id);
+    setOpenFilterKey(null);
+  }
+
+  function deleteSavedView(viewId: string) {
+    const view = savedViews.find((item) => item.id === viewId);
+    if (!view) return;
+
+    setViewDialog({
+      kind: "delete",
+      viewId,
+    });
+  }
+
+  function editSavedViewFilters(viewId: string) {
+    applySavedView(viewId);
+  }
+
+  async function copySavedViewLink(viewId: string) {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("historyView", viewId);
+    await copyTextToClipboard(url.toString());
   }
 
   function toggleSort(nextKey: ColumnKey) {
@@ -660,12 +1089,104 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   }, [columnOrder]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      const raw = window.localStorage.getItem(HISTORY_VIEWS_STORAGE_KEY);
+      if (!raw) {
+        loadedSavedViewsRef.current = true;
+        return;
+      }
+      const parsed = JSON.parse(raw) as unknown;
+      setSavedViews(normalizeSavedHistoryViews(parsed));
+    } catch {
+      // ignore storage parse issues
+    } finally {
+      loadedSavedViewsRef.current = true;
+      setSavedViewsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!loadedSavedViewsRef.current) return;
+
+    try {
+      window.localStorage.setItem(
+        HISTORY_VIEWS_STORAGE_KEY,
+        JSON.stringify(savedViews),
+      );
+    } catch {
+      // ignore storage write issues
+    }
+  }, [savedViews]);
+
+  useEffect(() => {
     const ticker = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(ticker);
   }, []);
 
   useEffect(() => {
-    if (!openFilterKey && !openStatusMenuId && !tableSettingsOpen) return;
+    if (hydratedViewFromUrlRef.current) return;
+    if (!savedViewsLoaded) return;
+    if (typeof window === "undefined") return;
+
+    const requestedViewId = new URL(window.location.href).searchParams.get("historyView");
+    if (!requestedViewId) {
+      hydratedViewFromUrlRef.current = true;
+      return;
+    }
+
+    const requestedView = savedViews.find((item) => item.id === requestedViewId);
+    if (requestedView) {
+      setFilters(cloneFilters(requestedView.filters));
+      setActiveViewId(requestedView.id);
+      setOpenFilterKey(null);
+    }
+
+    hydratedViewFromUrlRef.current = true;
+  }, [savedViewsLoaded, savedViews]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const url = new URL(window.location.href);
+    if (activeViewId && activeViewId !== DEFAULT_VIEW_ID) {
+      url.searchParams.set("historyView", activeViewId);
+    } else {
+      url.searchParams.delete("historyView");
+    }
+    window.history.replaceState(null, "", url.toString());
+  }, [activeViewId]);
+
+  useEffect(() => {
+    if (activeViewId === null) {
+      if (areFiltersEqual(filters, EMPTY_FILTERS)) {
+        setActiveViewId(DEFAULT_VIEW_ID);
+      }
+      return;
+    }
+
+    if (activeViewId === DEFAULT_VIEW_ID) {
+      if (!areFiltersEqual(filters, EMPTY_FILTERS)) {
+        setActiveViewId(null);
+      }
+      return;
+    }
+
+    const activeView = savedViews.find((item) => item.id === activeViewId);
+    if (!activeView) {
+      setActiveViewId(areFiltersEqual(filters, EMPTY_FILTERS) ? DEFAULT_VIEW_ID : null);
+      return;
+    }
+
+    if (!areFiltersEqual(filters, activeView.filters)) {
+      setActiveViewId(null);
+    }
+  }, [activeViewId, filters, savedViews]);
+
+  useEffect(() => {
+    if (!openFilterKey && !openStatusMenuId && !openCategoryMenuId && !openViewMenuId && !tableSettingsOpen) return;
 
     function onPointerDown(event: MouseEvent) {
       const target = event.target as HTMLElement;
@@ -674,6 +1195,11 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         target.closest('[data-filter-btn="true"]') ||
         target.closest('[data-status-menu="true"]') ||
         target.closest('[data-status-btn="true"]') ||
+        target.closest('[data-category-menu="true"]') ||
+        target.closest('[data-category-btn="true"]') ||
+        target.closest('[data-view-menu="true"]') ||
+        target.closest('[data-view-options-btn="true"]') ||
+        target.closest('[data-view-dialog="true"]') ||
         target.closest('[data-table-settings="true"]') ||
         target.closest('[data-table-settings-btn="true"]')
       ) {
@@ -681,6 +1207,8 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
       }
       setOpenFilterKey(null);
       setOpenStatusMenuId(null);
+      setOpenCategoryMenuId(null);
+      setOpenViewMenuId(null);
       setTableSettingsOpen(false);
     }
 
@@ -688,6 +1216,8 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
       if (event.key === "Escape") {
         setOpenFilterKey(null);
         setOpenStatusMenuId(null);
+        setOpenCategoryMenuId(null);
+        setOpenViewMenuId(null);
         setTableSettingsOpen(false);
       }
     }
@@ -698,7 +1228,133 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [openFilterKey, openStatusMenuId, tableSettingsOpen]);
+  }, [openFilterKey, openStatusMenuId, openCategoryMenuId, openViewMenuId, tableSettingsOpen]);
+
+  useEffect(() => {
+    if (!tableSettingsOpen) {
+      setOpenTableSettingsMenu(null);
+    }
+  }, [tableSettingsOpen]);
+
+  useEffect(() => {
+    if (!openTableSettingsMenu) return;
+
+    function onPointerDown(event: MouseEvent) {
+      const target = event.target as HTMLElement;
+      if (
+        target.closest('[data-table-settings-select-menu="true"]') ||
+        target.closest('[data-table-settings-select-btn="true"]')
+      ) {
+        return;
+      }
+      setOpenTableSettingsMenu(null);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpenTableSettingsMenu(null);
+      }
+    }
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openTableSettingsMenu]);
+
+  useEffect(() => {
+    if (!openStatusMenuId) {
+      setStatusMenuPosition(null);
+      return;
+    }
+
+    const statusMenuId = openStatusMenuId;
+
+    function updateStatusMenuPosition() {
+      const trigger = statusButtonRefs.current[statusMenuId];
+      if (!trigger) {
+        setOpenStatusMenuId(null);
+        setOpenCategoryMenuId(null);
+        return;
+      }
+      setStatusMenuPosition(getStatusMenuPositionFromTrigger(trigger));
+    }
+
+    updateStatusMenuPosition();
+    window.addEventListener("resize", updateStatusMenuPosition);
+    window.addEventListener("scroll", updateStatusMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateStatusMenuPosition);
+      window.removeEventListener("scroll", updateStatusMenuPosition, true);
+    };
+  }, [openStatusMenuId]);
+
+  useEffect(() => {
+    if (!openCategoryMenuId) {
+      setCategoryMenuPosition(null);
+      return;
+    }
+
+    const categoryMenuId = openCategoryMenuId;
+
+    function updateCategoryMenuPosition() {
+      const trigger = categoryButtonRefs.current[categoryMenuId];
+      if (!trigger) {
+        setOpenCategoryMenuId(null);
+        return;
+      }
+      setCategoryMenuPosition(getStatusMenuPositionFromTrigger(trigger));
+    }
+
+    updateCategoryMenuPosition();
+    window.addEventListener("resize", updateCategoryMenuPosition);
+    window.addEventListener("scroll", updateCategoryMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateCategoryMenuPosition);
+      window.removeEventListener("scroll", updateCategoryMenuPosition, true);
+    };
+  }, [openCategoryMenuId]);
+
+  useEffect(() => {
+    if (!openViewMenuId) {
+      setViewMenuPosition(null);
+      return;
+    }
+
+    const viewMenuId = openViewMenuId;
+
+    function updateViewMenuPosition() {
+      const trigger = viewMenuButtonRefs.current[viewMenuId];
+      if (!trigger) {
+        setOpenViewMenuId(null);
+        return;
+      }
+      setViewMenuPosition(getViewMenuPositionFromTrigger(trigger));
+    }
+
+    updateViewMenuPosition();
+    window.addEventListener("resize", updateViewMenuPosition);
+    window.addEventListener("scroll", updateViewMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateViewMenuPosition);
+      window.removeEventListener("scroll", updateViewMenuPosition, true);
+    };
+  }, [openViewMenuId]);
+
+  useEffect(() => {
+    if (!viewDialog) return;
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setViewDialog(null);
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [viewDialog]);
 
   useEffect(() => {
     if (!editingId) return;
@@ -711,6 +1367,11 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         target.closest('[data-filter-btn="true"]') ||
         target.closest('[data-status-menu="true"]') ||
         target.closest('[data-status-btn="true"]') ||
+        target.closest('[data-category-menu="true"]') ||
+        target.closest('[data-category-btn="true"]') ||
+        target.closest('[data-view-menu="true"]') ||
+        target.closest('[data-view-options-btn="true"]') ||
+        target.closest('[data-view-dialog="true"]') ||
         target.closest('[data-table-settings="true"]') ||
         target.closest('[data-table-settings-btn="true"]')
       ) {
@@ -725,6 +1386,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
 
   useEffect(() => {
     if (!editFocusTarget || editingId !== editFocusTarget.id) return;
+    if (editingKey !== editFocusTarget.key) return;
 
     const selector = `[data-editor-id="${editFocusTarget.id}"][data-editor-key="${editFocusTarget.key}"]`;
     const target = document.querySelector<HTMLElement>(selector);
@@ -732,7 +1394,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
       target.focus();
       setEditFocusTarget(null);
     }
-  }, [editFocusTarget, editingId]);
+  }, [editFocusTarget, editingId, editingKey]);
 
   const categoryOptions = useMemo(() => {
     const out = new Set<string>();
@@ -824,11 +1486,374 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   const tableViewportHeight = Math.ceil(
     headerRowHeight + bodyRowHeight * visibleRowCount + 2,
   );
+  const tableViewportOuterHeight = tableViewportHeight + tableHeightCompensation;
   const cellPaddingClass =
     displayDensity === "compact" ? "px-2 py-1.5" : "px-2.5 py-2.5";
+  const editControlClass =
+    "w-full appearance-none border-0 bg-transparent px-0 py-0 text-[14px] leading-5 text-white caret-white outline-none ring-0 transition-colors placeholder:text-zinc-500 focus:outline-none focus:ring-0 disabled:opacity-70";
+  const editTextareaClass = `${editControlClass} h-16 resize-none`;
+  const tableSettingsTriggerClass =
+    "inline-flex w-full items-center justify-between gap-2 rounded-md border border-white/25 bg-black/35 px-2.5 py-1.5 text-left text-[13px] leading-5 transition-colors hover:bg-black/55";
+  const tableSettingsMenuClass =
+    "absolute left-0 top-full z-50 mt-1 w-full rounded-xl border border-white/15 bg-gradient-to-b from-zinc-900/95 to-black/95 p-1 shadow-2xl backdrop-blur";
+  const selectedSortLabel =
+    sortColumnOptions.find((option) => option.key === sortKey)?.label ??
+    "Start Time";
+  const selectedRefreshLabel =
+    REFRESH_FREQUENCY_OPTIONS.find((option) => option.value === refreshFrequencyMs)
+      ?.label ?? "Off";
+  const hasUnsavedFilters = activeViewId === null && !areFiltersEqual(filters, EMPTY_FILTERS);
+  const openStatusDraft = openStatusMenuId ? drafts[openStatusMenuId] : null;
+  const statusMenuPortal =
+    openStatusMenuId && statusMenuPosition && openStatusDraft
+      ? createPortal(
+          <div
+            data-status-menu="true"
+            className="fixed z-[90] w-56 rounded-xl border border-white/15 bg-gradient-to-b from-zinc-900/95 to-black/95 p-2 shadow-2xl backdrop-blur"
+            style={{
+              left: statusMenuPosition.left + "px",
+              top: statusMenuPosition.top + "px",
+              transform: statusMenuPosition.openUp ? "translateY(-100%)" : "none",
+            }}
+          >
+            {STATUS_GROUPS.map((group) => (
+              <div
+                key={"status-edit-group-" + group.label}
+                className="border-t border-white/10 pt-2 first:border-t-0 first:pt-0"
+              >
+                <div className="px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                  {group.label}
+                </div>
+                <div className="mt-1 space-y-1">
+                  {group.values.map((statusValue) => {
+                    const activeStatus = openStatusDraft.status === statusValue;
+                    return (
+                      <button
+                        key={"status-edit-" + openStatusMenuId + "-" + statusValue}
+                        type="button"
+                        className={[
+                          "w-full rounded-md px-1.5 py-1 text-left text-xs transition-colors",
+                          activeStatus ? "bg-white/10" : "hover:bg-white/5",
+                        ].join(" ")}
+                        onClick={() => {
+                          setDraftPatch(openStatusMenuId, { status: statusValue });
+                          setOpenStatusMenuId(null);
+        setOpenCategoryMenuId(null);
+                        }}
+                      >
+                        <span
+                          className={[
+                            "inline-flex items-center rounded-full border px-1.5 py-0 text-xs leading-4",
+                            getStatusPillClassName(statusValue),
+                          ].join(" ")}
+                        >
+                          <span
+                            className={[
+                              "mr-1 inline-block h-1 w-1 rounded-full",
+                              getStatusDotClassName(statusValue),
+                            ].join(" ")}
+                          />
+                          {formatStatusLabel(statusValue)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )
+      : null;
+
+  const openCategoryDraft = openCategoryMenuId ? drafts[openCategoryMenuId] : null;
+  const categoryMenuValues =
+    openCategoryDraft
+      ? (() => {
+          const seen = new Set<string>();
+          const values: string[] = [];
+          const draftCategory = openCategoryDraft.category.trim();
+
+          if (draftCategory) {
+            values.push(draftCategory);
+            seen.add(draftCategory.toLowerCase());
+          }
+
+          for (const category of categoryOptions) {
+            const normalized = category.trim();
+            if (!normalized) continue;
+            const lookup = normalized.toLowerCase();
+            if (seen.has(lookup)) continue;
+            seen.add(lookup);
+            values.push(normalized);
+          }
+
+          return values;
+        })()
+      : [];
+
+  const categoryMenuPortal =
+    openCategoryMenuId && categoryMenuPosition && openCategoryDraft
+      ? createPortal(
+          <div
+            data-category-menu="true"
+            className="fixed z-[90] w-56 rounded-xl border border-white/15 bg-gradient-to-b from-zinc-900/95 to-black/95 p-2 shadow-2xl backdrop-blur"
+            style={{
+              left: categoryMenuPosition.left + "px",
+              top: categoryMenuPosition.top + "px",
+              transform: categoryMenuPosition.openUp ? "translateY(-100%)" : "none",
+            }}
+          >
+            <div className="mb-1 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">
+              Category
+            </div>
+            <div className="app-scrollbar max-h-56 space-y-1 overflow-y-auto">
+              {categoryMenuValues.length ? (
+                categoryMenuValues.map((category) => {
+                  const active =
+                    openCategoryDraft.category.trim().toLowerCase() ===
+                    category.toLowerCase();
+                  const style = getCategoryStyle(normalizeCategory(category)).badgeStyle;
+
+                  return (
+                    <button
+                      key={"category-edit-" + openCategoryMenuId + "-" + category}
+                      type="button"
+                      className={[
+                        "flex w-full items-center justify-between rounded-md px-1.5 py-1 text-left text-xs transition-colors",
+                        active ? "bg-white/10" : "hover:bg-white/5",
+                      ].join(" ")}
+                      onClick={() => {
+                        setDraftPatch(openCategoryMenuId, { category });
+                        setOpenCategoryMenuId(null);
+                      }}
+                    >
+                      <span
+                        className="inline-flex items-center rounded-md border px-1.5 py-0 text-xs leading-4 font-medium"
+                        style={style}
+                      >
+                        {category}
+                      </span>
+                      {active ? <span className="text-zinc-300">Selected</span> : null}
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="px-1 py-1 text-xs text-muted-foreground">
+                  No categories available yet.
+                </div>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
+  const openViewMenu = openViewMenuId
+    ? savedViews.find((item) => item.id === openViewMenuId) ?? null
+    : null;
+
+  const viewMenuPortal =
+    openViewMenu && viewMenuPosition
+      ? createPortal(
+          <div
+            data-view-menu="true"
+            className="fixed z-[95] w-64 rounded-xl border border-white/15 bg-gradient-to-b from-zinc-900/95 to-black/95 p-2 shadow-2xl backdrop-blur"
+            style={{
+              left: viewMenuPosition.left + "px",
+              top: viewMenuPosition.top + "px",
+              transform: viewMenuPosition.openUp ? "translateY(-100%)" : "none",
+            }}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-zinc-100 transition-colors hover:bg-white/10"
+              onClick={() => {
+                renameSavedView(openViewMenu.id);
+                setOpenViewMenuId(null);
+              }}
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4" aria-hidden="true">
+                <path d="m4 13 8.7-8.7 2 2L6 15H4v-2Z" />
+                <path d="M11.7 4l2.3 2.3" />
+              </svg>
+              Rename
+            </button>
+
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-zinc-100 transition-colors hover:bg-white/10"
+              onClick={() => {
+                editSavedViewFilters(openViewMenu.id);
+                setOpenViewMenuId(null);
+              }}
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4" aria-hidden="true">
+                <path d="M4 6h12M4 10h8M4 14h6" />
+                <circle cx="14.5" cy="10" r="1.2" />
+              </svg>
+              Edit filters
+            </button>
+
+            <div className="my-1 border-t border-white/10" />
+
+            <div className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm text-zinc-300">
+              <span className="inline-flex items-center gap-2">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4" aria-hidden="true">
+                  <path d="M4.5 15.5h11v-8l-5.5-3-5.5 3v8Z" />
+                </svg>
+                Source
+              </span>
+              <span className="inline-flex items-center gap-1 truncate text-xs text-zinc-400">
+                Local
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-3.5 w-3.5" aria-hidden="true">
+                  <path d="m8 5 5 5-5 5" />
+                </svg>
+              </span>
+            </div>
+
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-zinc-100 transition-colors hover:bg-white/10"
+              onClick={async () => {
+                await copySavedViewLink(openViewMenu.id);
+                setOpenViewMenuId(null);
+              }}
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4" aria-hidden="true">
+                <path d="M8 12.5 12.5 8M6.2 13.8l-1.5 1.5a2.2 2.2 0 0 1-3.1-3.1l2.7-2.7a2.2 2.2 0 0 1 3.1 0" />
+                <path d="M13.8 6.2l1.5-1.5a2.2 2.2 0 1 1 3.1 3.1l-2.7 2.7a2.2 2.2 0 0 1-3.1 0" />
+              </svg>
+              Copy link to view
+            </button>
+
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-zinc-100 transition-colors hover:bg-white/10"
+              onClick={() => {
+                duplicateSavedView(openViewMenu.id);
+                setOpenViewMenuId(null);
+              }}
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4" aria-hidden="true">
+                <rect x="6" y="6" width="10" height="10" rx="2" />
+                <path d="M4 12V5a1 1 0 0 1 1-1h7" />
+              </svg>
+              Duplicate view
+            </button>
+
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-red-200 transition-colors hover:bg-red-500/20"
+              onClick={() => {
+                deleteSavedView(openViewMenu.id);
+                setOpenViewMenuId(null);
+              }}
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4" aria-hidden="true">
+                <path d="M4.5 5.5h11" />
+                <path d="M7.5 5.5V4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1.5" />
+                <path d="M6.5 5.5l.8 10a1 1 0 0 0 1 .9h3.4a1 1 0 0 0 1-.9l.8-10" />
+              </svg>
+              Delete view
+            </button>
+          </div>,
+          document.body,
+        )
+      : null;
+
+  const viewDialogTarget =
+    viewDialog && viewDialog.kind !== "create"
+      ? savedViews.find((item) => item.id === viewDialog.viewId) ?? null
+      : null;
+
+  const viewDialogPortal =
+    viewDialog
+      ? createPortal(
+          <div
+            data-view-dialog="true"
+            className="fixed inset-0 z-[110] flex items-center justify-center bg-black/65 p-4"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setViewDialog(null);
+            }}
+          >
+            <div className="w-full max-w-md rounded-2xl border border-white/15 bg-gradient-to-b from-zinc-900/95 to-black/95 p-4 shadow-2xl backdrop-blur">
+              <h3 className="text-xl font-semibold tracking-tight">
+                {viewDialog.kind === "delete"
+                  ? "Delete this view?"
+                  : viewDialog.kind === "rename"
+                    ? "Rename view"
+                    : "Create new view"}
+              </h3>
+
+              {viewDialog.kind === "delete" ? (
+                <p className="mt-2 text-sm text-zinc-300">
+                  Delete view &quot;{viewDialogTarget?.name ?? "this view"}&quot;?
+                </p>
+              ) : (
+                <form
+                  className="mt-3 space-y-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submitViewDialog();
+                  }}
+                >
+                  <input
+                    type="text"
+                    autoFocus
+                    className="w-full rounded-md border border-white/20 bg-black/35 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-cyan-300/50"
+                    value={viewDialog.draftName}
+                    onChange={(event) =>
+                      setViewDialog((previous) => {
+                        if (!previous || previous.kind === "delete") return previous;
+                        return {
+                          ...previous,
+                          draftName: event.target.value,
+                          error: null,
+                        };
+                      })
+                    }
+                  />
+                  {viewDialog.error ? (
+                    <p className="text-xs text-red-300">{viewDialog.error}</p>
+                  ) : null}
+                </form>
+              )}
+
+              <div className="mt-4 grid gap-2">
+                <button
+                  type="button"
+                  className={[
+                    "rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
+                    viewDialog.kind === "delete"
+                      ? "border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                      : "border-cyan-300/35 bg-cyan-400/15 text-cyan-100 hover:bg-cyan-400/25",
+                  ].join(" ")}
+                  onClick={submitViewDialog}
+                >
+                  {viewDialog.kind === "delete"
+                    ? "Delete view"
+                    : viewDialog.kind === "rename"
+                      ? "Save name"
+                      : "Create view"}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm font-semibold text-zinc-200 transition-colors hover:bg-white/10"
+                  onClick={() => setViewDialog(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
 
   useEffect(() => {
     if (currentPage !== safePage) {
+
       setCurrentPage(safePage);
     }
   }, [currentPage, safePage]);
@@ -869,6 +1894,43 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     columnWidths,
   ]);
 
+  // Add only enough extra height to account for horizontal scrollbar thickness,
+  // so vertical scrolling doesn't appear just to reveal the last row.
+  useEffect(() => {
+    const viewport = tableViewportRef.current;
+    if (!viewport) return;
+
+    const hasHorizontalOverflow = viewport.scrollWidth > viewport.clientWidth + 1;
+    if (!hasHorizontalOverflow) {
+      if (tableHeightCompensation !== 0) {
+        setTableHeightCompensation(0);
+      }
+      return;
+    }
+
+    const styles = window.getComputedStyle(viewport);
+    const borderTop = parseFloat(styles.borderTopWidth || "0");
+    const borderBottom = parseFloat(styles.borderBottomWidth || "0");
+    const scrollbarHeight = Math.max(
+      0,
+      Math.ceil(viewport.offsetHeight - viewport.clientHeight - borderTop - borderBottom),
+    );
+
+    if (Math.abs(scrollbarHeight - tableHeightCompensation) > 0.5) {
+      setTableHeightCompensation(scrollbarHeight);
+    }
+  }, [
+    tableHeightCompensation,
+    tableViewportHeight,
+    columnOrder,
+    columnWidths,
+    recordsPerPage,
+    displayDensity,
+    pageStart,
+    pageEnd,
+  ]);
+
+  // Header cell renderer handles sorting, filtering, dragging, and resizing affordances.
   function renderHeader(def: ColumnDef) {
     const active = sortKey === def.key;
     const sortArrow = sortDirection === "asc" ? "A-Z" : "Z-A";
@@ -918,11 +1980,12 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         <button
           type="button"
           className={[
-            "inline-flex w-full items-center gap-1 pr-10 text-[15px] leading-tight font-bold text-left rounded-sm px-1 py-0.5 transition-colors",
+            "inline-flex w-full items-center gap-1.5 pr-10 text-[15px] leading-tight font-bold text-left rounded-sm px-1 py-0.5 transition-colors",
             active ? "text-foreground" : "text-muted-foreground",
           ].join(" ")}
           onClick={() => toggleSort(def.key)}
         >
+          {renderColumnHeaderIcon(def.key)}
           <span>{def.label}</span>
           {active ? <span className="text-[11px]">{sortArrow}</span> : null}
         </button>
@@ -1086,10 +2149,10 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
 
   function renderCellActions(event: ActivityEvent, key: ColumnKey, value: string) {
     return (
-      <span className="pointer-events-none absolute right-1 top-1/2 inline-flex -translate-y-1/2 gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+      <span className="pointer-events-none absolute right-1.5 top-1/2 inline-flex -translate-y-1/2 gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"
-          className="pointer-events-auto rounded border border-white/20 bg-black/40 p-0.5 text-white/80 hover:bg-black/70 hover:text-white"
+          className="pointer-events-auto rounded-md border border-white/25 bg-black/55 p-1 text-white/80 shadow-sm transition-colors hover:bg-black/80 hover:text-white"
           aria-label="Copy cell value"
           title="Copy"
           onClick={async (e) => {
@@ -1107,7 +2170,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             fill="none"
             stroke="currentColor"
             strokeWidth="1.8"
-            className="h-3 w-3"
+            className="h-3.5 w-3.5"
             aria-hidden="true"
           >
             <rect x="7" y="7" width="10" height="10" rx="1.5" />
@@ -1116,7 +2179,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         </button>
         <button
           type="button"
-          className="pointer-events-auto rounded border border-white/20 bg-black/40 p-0.5 text-white/80 hover:bg-black/70 hover:text-white"
+          className="pointer-events-auto rounded-md border border-white/25 bg-black/55 p-1 text-white/80 shadow-sm transition-colors hover:bg-black/80 hover:text-white"
           aria-label="Edit row at this column"
           title="Edit"
           onClick={(e) => {
@@ -1130,7 +2193,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             fill="none"
             stroke="currentColor"
             strokeWidth="1.8"
-            className="h-3 w-3"
+            className="h-3.5 w-3.5"
             aria-hidden="true"
           >
             <path d="m4 13.5 8.9-8.9a1.7 1.7 0 0 1 2.4 0l.1.1a1.7 1.7 0 0 1 0 2.4L6.5 16H4v-2.5Z" />
@@ -1141,16 +2204,19 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     );
   }
 
+    // Body cell renderer switches between display mode and single-cell edit mode.
   function renderBodyCell(
     key: ColumnKey,
     event: ActivityEvent,
     draft: EventDraft,
-    isEditing: boolean,
+    isRowEditing: boolean,
     saving: boolean,
     duration: string,
     isActive: boolean,
     categoryStyle: ReturnType<typeof getCategoryStyle>,
   ) {
+    const isEditing = isRowEditing && editingKey === toEditableColumnKey(key);
+
     switch (key) {
       case "title":
         return (
@@ -1158,12 +2224,12 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             key={`${event.id}-${key}`}
             className={[
               `border-r border-white/10 ${cellPaddingClass}`,
-              isEditing ? "" : "group relative pr-10",
+              isEditing ? "bg-black/80 text-white" : "group relative pr-10",
             ].join(" ")}
           >
             {isEditing ? (
               <input
-                className="w-full border border-white/25 bg-transparent px-1.5 py-0.5 text-[14px] outline-none"
+                className={editControlClass}
                 value={draft.title}
                 onChange={(e) => setDraftPatch(event.id, { title: e.target.value })}
                 disabled={saving}
@@ -1186,13 +2252,13 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             key={`${event.id}-${key}`}
             className={[
               `border-r border-white/10 ${cellPaddingClass}`,
-              isEditing ? "" : "group relative pr-10",
+              isEditing ? "bg-black/80 text-white" : "group relative pr-10",
             ].join(" ")}
           >
             {isEditing ? (
               <input
                 type="datetime-local"
-                className="w-full border border-white/25 bg-transparent px-1.5 py-0.5 text-[14px] outline-none"
+                className={editControlClass}
                 value={draft.startTime}
                 onChange={(e) => setDraftPatch(event.id, { startTime: e.target.value })}
                 disabled={saving}
@@ -1217,13 +2283,13 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             key={`${event.id}-${key}`}
             className={[
               `border-r border-white/10 ${cellPaddingClass}`,
-              isEditing ? "" : "group relative pr-10",
+              isEditing ? "bg-black/80 text-white" : "group relative pr-10",
             ].join(" ")}
           >
             {isEditing ? (
               <input
                 type="datetime-local"
-                className="w-full border border-white/25 bg-transparent px-1.5 py-0.5 text-[14px] outline-none"
+                className={editControlClass}
                 value={draft.endTime}
                 onChange={(e) => setDraftPatch(event.id, { endTime: e.target.value })}
                 disabled={saving}
@@ -1242,15 +2308,17 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         return (
           <td
             key={`${event.id}-${key}`}
-            className={`group relative border-r border-white/10 ${cellPaddingClass} pr-10 text-right text-[14px] text-muted-foreground whitespace-nowrap`}
+            className={[`border-r border-white/10 ${cellPaddingClass} text-right text-[14px] text-muted-foreground whitespace-nowrap`, isEditing ? "bg-black/80 text-white" : "group relative pr-10"].join(" ")}
           >
             {duration}
             {isActive ? " active" : ""}
-            {renderCellActions(
-              event,
-              "duration",
-              `${duration}${isActive ? " active" : ""}`,
-            )}
+            {!isEditing
+              ? renderCellActions(
+                  event,
+                  "duration",
+                  `${duration}${isActive ? " active" : ""}`,
+                )
+              : null}
           </td>
         );
       case "status":
@@ -1259,7 +2327,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             key={`${event.id}-${key}`}
             className={[
               `border-r border-white/10 ${cellPaddingClass}`,
-              isEditing ? "" : "group relative pr-10",
+              isEditing ? "bg-black/80 text-white" : "group relative pr-10",
             ].join(" ")}
           >
             {isEditing ? (
@@ -1267,12 +2335,22 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
                 <button
                   type="button"
                   data-status-btn="true"
-                  className="inline-flex w-full items-center justify-between gap-2 rounded-md border border-white/20 bg-white/5 px-2 py-1 text-[14px] transition-colors hover:bg-white/10"
-                  onClick={() =>
-                    setOpenStatusMenuId((previous) =>
-                      previous === event.id ? null : event.id,
-                    )
-                  }
+                  ref={(node) => {
+                    statusButtonRefs.current[event.id] = node;
+                  }}
+                  className="inline-flex w-full items-center justify-between gap-2 bg-transparent px-0 py-0 text-[14px] leading-5 outline-none ring-0 transition-colors hover:text-white focus:outline-none focus:ring-0"
+                  onClick={(clickEvent) => {
+                    if (openStatusMenuId === event.id) {
+                      setOpenStatusMenuId(null);
+        setOpenCategoryMenuId(null);
+                      return;
+                    }
+                    setStatusMenuPosition(
+                      getStatusMenuPositionFromTrigger(clickEvent.currentTarget),
+                    );
+                    setOpenCategoryMenuId(null);
+                    setOpenStatusMenuId(event.id);
+                  }}
                   disabled={saving}
                   data-editor-id={event.id}
                   data-editor-key="status"
@@ -1302,55 +2380,6 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
                     <path d="m5 7 5 6 5-6" />
                   </svg>
                 </button>
-
-                {openStatusMenuId === event.id ? (
-                  <div className="absolute left-0 top-full z-30 mt-1 w-56 rounded-xl border border-white/15 bg-gradient-to-b from-zinc-900/95 to-black/95 p-2 shadow-2xl backdrop-blur">
-                    {STATUS_GROUPS.map((group) => (
-                      <div
-                        key={`status-edit-group-${group.label}`}
-                        className="border-t border-white/10 pt-2 first:border-t-0 first:pt-0"
-                      >
-                        <div className="px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                          {group.label}
-                        </div>
-                        <div className="mt-1 space-y-1">
-                          {group.values.map((statusValue) => {
-                            const activeStatus = draft.status === statusValue;
-                            return (
-                              <button
-                                key={`status-edit-${event.id}-${statusValue}`}
-                                type="button"
-                                className={[
-                                  "w-full rounded-md px-1.5 py-1 text-left text-xs transition-colors",
-                                  activeStatus ? "bg-white/10" : "hover:bg-white/5",
-                                ].join(" ")}
-                                onClick={() => {
-                                  setDraftPatch(event.id, { status: statusValue });
-                                  setOpenStatusMenuId(null);
-                                }}
-                              >
-                                <span
-                                  className={[
-                                    "inline-flex items-center rounded-full border px-1.5 py-0 text-xs leading-4",
-                                    getStatusPillClassName(statusValue),
-                                  ].join(" ")}
-                                >
-                                  <span
-                                    className={[
-                                      "mr-1 inline-block h-1 w-1 rounded-full",
-                                      getStatusDotClassName(statusValue),
-                                    ].join(" ")}
-                                  />
-                                  {formatStatusLabel(statusValue)}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
               </div>
             ) : (
               <>
@@ -1379,12 +2408,12 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             key={`${event.id}-${key}`}
             className={[
               `border-r border-white/10 ${cellPaddingClass}`,
-              isEditing ? "" : "group relative pr-10",
+              isEditing ? "bg-black/80 text-white" : "group relative pr-10",
             ].join(" ")}
           >
             {isEditing ? (
               <input
-                className="w-full border border-white/25 bg-transparent px-1.5 py-0.5 text-[14px] outline-none"
+                className={editControlClass}
                 value={draft.project}
                 onChange={(e) => setDraftPatch(event.id, { project: e.target.value })}
                 disabled={saving}
@@ -1407,12 +2436,12 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             key={`${event.id}-${key}`}
             className={[
               `border-r border-white/10 ${cellPaddingClass}`,
-              isEditing ? "" : "group relative pr-10",
+              isEditing ? "bg-black/80 text-white" : "group relative pr-10",
             ].join(" ")}
           >
             {isEditing ? (
               <textarea
-                className="h-14 w-full resize-none border border-white/25 bg-transparent px-1.5 py-0.5 text-[14px] outline-none"
+                className={editTextareaClass}
                 value={draft.notes}
                 onChange={(e) => setDraftPatch(event.id, { notes: e.target.value })}
                 disabled={saving}
@@ -1435,19 +2464,51 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
             key={`${event.id}-${key}`}
             className={[
               `border-r border-white/10 ${cellPaddingClass}`,
-              isEditing ? "" : "group relative pr-10",
+              isEditing ? "bg-black/80 text-white" : "group relative pr-10",
             ].join(" ")}
           >
             {isEditing ? (
-              <input
-                className="w-full border border-white/25 bg-transparent px-1.5 py-0.5 text-[14px] outline-none"
-                value={draft.category}
-                onChange={(e) => setDraftPatch(event.id, { category: e.target.value })}
-                list="history-category-options"
-                disabled={saving}
-                data-editor-id={event.id}
-                data-editor-key="type"
-              />
+              <div className="relative" data-category-menu="true">
+                <button
+                  type="button"
+                  data-category-btn="true"
+                  ref={(node) => {
+                    categoryButtonRefs.current[event.id] = node;
+                  }}
+                  className="inline-flex w-full items-center justify-between gap-2 bg-transparent px-0 py-0 text-[14px] leading-5 outline-none ring-0 transition-colors hover:text-white focus:outline-none focus:ring-0"
+                  onClick={(clickEvent) => {
+                    if (openCategoryMenuId === event.id) {
+                      setOpenCategoryMenuId(null);
+                      return;
+                    }
+                    setCategoryMenuPosition(
+                      getStatusMenuPositionFromTrigger(clickEvent.currentTarget),
+                    );
+                    setOpenStatusMenuId(null);
+                    setOpenCategoryMenuId(event.id);
+                  }}
+                  disabled={saving}
+                  data-editor-id={event.id}
+                  data-editor-key="type"
+                >
+                  <span
+                    className="inline-flex items-center rounded-md border px-1.5 py-0 text-xs leading-4 font-medium"
+                    style={categoryStyle.badgeStyle}
+                  >
+                    {draft.category || "Uncategorized"}
+                  </span>
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    className="h-3.5 w-3.5 text-muted-foreground"
+                    aria-hidden="true"
+                  >
+                    <path d="m5 7 5 6 5-6" />
+                  </svg>
+                </button>
+              </div>
             ) : (
               <>
                 <span
@@ -1468,21 +2529,26 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   }
 
   return (
-    <div className="flex min-h-0 flex-col space-y-3 rounded-xl bg-zinc-900/60 p-4">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h2 className="text-lg font-semibold">History</h2>
+    <div className="flex min-h-0 flex-col space-y-3 rounded-2xl border border-white/10 bg-zinc-900/60 p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h2 className="text-xl font-semibold tracking-tight">History</h2>
+          <p className="text-xs text-muted-foreground">
+            Review, edit, and filter tracked work sessions.
+          </p>
+        </div>
         <div className="relative flex items-center gap-2">
           <button
             type="button"
             data-table-settings-btn="true"
-            className="px-2.5 py-1 rounded-lg border text-xs"
+            className="rounded-lg border border-white/25 bg-black/20 px-3 py-1.5 text-xs font-medium transition-colors hover:bg-white/10"
             onClick={() => setTableSettingsOpen((previous) => !previous)}
           >
             Table Settings
           </button>
           <button
             type="button"
-            className="px-2.5 py-1 rounded-lg border text-xs"
+            className="rounded-lg border border-white/25 bg-black/20 px-3 py-1.5 text-xs font-medium transition-colors hover:bg-white/10"
             onClick={async () => {
               await saveEditingRowIfNeeded();
               await refresh();
@@ -1501,33 +2567,121 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
               <div className="space-y-3 text-xs">
                 <label className="block space-y-1">
                   <span className="text-muted-foreground">Records Per Page</span>
-                  <select
-                    className="w-full rounded-md border border-white/20 bg-white/5 px-2 py-1 outline-none transition-colors focus:border-white/40 focus:bg-white/[0.08]"
-                    value={recordsPerPage}
-                    onChange={(event) => setRecordsPerPage(Number(event.target.value))}
-                  >
-                    {RECORDS_PER_PAGE_OPTIONS.map((value) => (
-                      <option key={value} value={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      data-table-settings-select-btn="true"
+                      className={tableSettingsTriggerClass}
+                      onClick={() =>
+                        setOpenTableSettingsMenu((previous) =>
+                          previous === "recordsPerPage" ? null : "recordsPerPage",
+                        )
+                      }
+                    >
+                      <span>{recordsPerPage}</span>
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        className="h-3.5 w-3.5 text-muted-foreground"
+                        aria-hidden="true"
+                      >
+                        <path d="m5 7 5 6 5-6" />
+                      </svg>
+                    </button>
+                    {openTableSettingsMenu === "recordsPerPage" ? (
+                      <div
+                        data-table-settings-select-menu="true"
+                        className={tableSettingsMenuClass}
+                      >
+                        {RECORDS_PER_PAGE_OPTIONS.map((value) => {
+                          const active = recordsPerPage === value;
+                          return (
+                            <button
+                              key={value}
+                              type="button"
+                              className={[
+                                "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                                active
+                                  ? "bg-white/10 text-white"
+                                  : "text-zinc-200 hover:bg-white/5",
+                              ].join(" ")}
+                              onClick={() => {
+                                setRecordsPerPage(value);
+                                setOpenTableSettingsMenu(null);
+                              }}
+                            >
+                              <span>{value}</span>
+                              {active ? (
+                                <span className="text-[11px] text-zinc-300">Selected</span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                 </label>
 
                 <label className="block space-y-1">
                   <span className="text-muted-foreground">Sort By Column</span>
                   <div className="flex gap-2">
-                    <select
-                      className="w-full rounded-md border border-white/20 bg-white/5 px-2 py-1 outline-none transition-colors focus:border-white/40 focus:bg-white/[0.08]"
-                      value={sortKey}
-                      onChange={(event) => setSortKey(event.target.value as ColumnKey)}
-                    >
-                      {sortColumnOptions.map((option) => (
-                        <option key={option.key} value={option.key}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="relative flex-1">
+                      <button
+                        type="button"
+                        data-table-settings-select-btn="true"
+                        className={tableSettingsTriggerClass}
+                        onClick={() =>
+                          setOpenTableSettingsMenu((previous) =>
+                            previous === "sortByColumn" ? null : "sortByColumn",
+                          )
+                        }
+                      >
+                        <span className="truncate">{selectedSortLabel}</span>
+                        <svg
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        >
+                          <path d="m5 7 5 6 5-6" />
+                        </svg>
+                      </button>
+                      {openTableSettingsMenu === "sortByColumn" ? (
+                        <div
+                          data-table-settings-select-menu="true"
+                          className={`${tableSettingsMenuClass} app-scrollbar max-h-56 overflow-y-auto`}
+                        >
+                          {sortColumnOptions.map((option) => {
+                            const active = sortKey === option.key;
+                            return (
+                              <button
+                                key={option.key}
+                                type="button"
+                                className={[
+                                  "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                                  active
+                                    ? "bg-white/10 text-white"
+                                    : "text-zinc-200 hover:bg-white/5",
+                                ].join(" ")}
+                                onClick={() => {
+                                  setSortKey(option.key);
+                                  setOpenTableSettingsMenu(null);
+                                }}
+                              >
+                                <span className="truncate">{option.label}</span>
+                                {active ? (
+                                  <span className="text-[11px] text-zinc-300">Selected</span>
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       className="rounded-md border border-white/20 px-2 py-1"
@@ -1550,19 +2704,63 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
 
                 <label className="block space-y-1">
                   <span className="text-muted-foreground">Refresh Frequency</span>
-                  <select
-                    className="w-full rounded-md border border-white/20 bg-white/5 px-2 py-1 outline-none transition-colors focus:border-white/40 focus:bg-white/[0.08]"
-                    value={refreshFrequencyMs}
-                    onChange={(event) =>
-                      setRefreshFrequencyMs(Number(event.target.value))
-                    }
-                  >
-                    {REFRESH_FREQUENCY_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      data-table-settings-select-btn="true"
+                      className={tableSettingsTriggerClass}
+                      onClick={() =>
+                        setOpenTableSettingsMenu((previous) =>
+                          previous === "refreshFrequency"
+                            ? null
+                            : "refreshFrequency",
+                        )
+                      }
+                    >
+                      <span>{selectedRefreshLabel}</span>
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        className="h-3.5 w-3.5 text-muted-foreground"
+                        aria-hidden="true"
+                      >
+                        <path d="m5 7 5 6 5-6" />
+                      </svg>
+                    </button>
+                    {openTableSettingsMenu === "refreshFrequency" ? (
+                      <div
+                        data-table-settings-select-menu="true"
+                        className={tableSettingsMenuClass}
+                      >
+                        {REFRESH_FREQUENCY_OPTIONS.map((option) => {
+                          const active = refreshFrequencyMs === option.value;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              className={[
+                                "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                                active
+                                  ? "bg-white/10 text-white"
+                                  : "text-zinc-200 hover:bg-white/5",
+                              ].join(" ")}
+                              onClick={() => {
+                                setRefreshFrequencyMs(option.value);
+                                setOpenTableSettingsMenu(null);
+                              }}
+                            >
+                              <span>{option.label}</span>
+                              {active ? (
+                                <span className="text-[11px] text-zinc-300">Selected</span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                 </label>
 
                 <div className="space-y-1">
@@ -1600,16 +2798,109 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         </div>
       </div>
 
+      <div className="rounded-xl border border-white/10 bg-black/20 p-2">
+        <div className="app-scrollbar flex items-center gap-2 overflow-x-auto">
+          <button
+            type="button"
+            className={[
+              "shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+              activeViewId === DEFAULT_VIEW_ID
+                ? "border-cyan-300/40 bg-cyan-400/20 text-cyan-100"
+                : "border-white/20 bg-black/30 text-zinc-200 hover:bg-white/10",
+            ].join(" ")}
+            onClick={() => applySavedView(DEFAULT_VIEW_ID)}
+          >
+            All Tasks
+          </button>
+
+          {savedViews.map((view) => (
+            <div key={view.id} className="inline-flex items-center rounded-md border border-white/20 bg-black/30">
+              <button
+                type="button"
+                className={[
+                  "shrink-0 rounded-l-md px-3 py-1.5 text-xs font-medium transition-colors",
+                  activeViewId === view.id
+                    ? "bg-cyan-400/20 text-cyan-100"
+                    : "text-zinc-200 hover:bg-white/10",
+                ].join(" ")}
+                onClick={() => applySavedView(view.id)}
+              >
+                {view.name}
+              </button>
+              <button
+                type="button"
+                data-view-options-btn="true"
+                ref={(node) => {
+                  viewMenuButtonRefs.current[view.id] = node;
+                }}
+                className={[
+                  "inline-flex h-full items-center rounded-r-md border-l border-white/15 px-2 text-zinc-300 transition-colors hover:bg-white/10 hover:text-white",
+                  openViewMenuId === view.id ? "bg-white/10 text-white" : "",
+                ].join(" ")}
+                aria-label={`Open options for ${view.name}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (openViewMenuId === view.id) {
+                    setOpenViewMenuId(null);
+                    return;
+                  }
+                  setViewMenuPosition(getViewMenuPositionFromTrigger(event.currentTarget));
+                  setOpenViewMenuId(view.id);
+                }}
+              >
+                <svg
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  className="h-3.5 w-3.5"
+                  aria-hidden="true"
+                >
+                  <circle cx="5" cy="10" r="1" fill="currentColor" stroke="none" />
+                  <circle cx="10" cy="10" r="1" fill="currentColor" stroke="none" />
+                  <circle cx="15" cy="10" r="1" fill="currentColor" stroke="none" />
+                </svg>
+              </button>
+            </div>
+          ))}
+
+          {hasUnsavedFilters ? (
+            <span className="shrink-0 rounded-md border border-amber-400/30 bg-amber-400/15 px-3 py-1.5 text-xs font-medium text-amber-100">
+              Unsaved filters
+            </span>
+          ) : null}
+
+          <button
+            type="button"
+            className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border border-white/25 bg-black/30 px-3 py-1.5 text-xs font-medium transition-colors hover:bg-white/10"
+            onClick={addSavedViewFromCurrentFilters}
+          >
+            <svg
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              className="h-3.5 w-3.5"
+              aria-hidden="true"
+            >
+              <path d="M10 4v12M4 10h12" />
+            </svg>
+            Add View
+          </button>
+        </div>
+      </div>
+
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading...</p>
+        <p className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-muted-foreground">Loading history...</p>
       ) : error ? (
-        <p className="text-sm text-red-500">{error}</p>
+        <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</p>
       ) : filteredSortedEvents.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No rows match your filters.</p>
+        <p className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-muted-foreground">No rows match your filters.</p>
       ) : (
         <div
-          className="app-scrollbar min-h-0 overflow-auto rounded-lg border border-white/10"
-          style={{ height: `${tableViewportHeight}px` }}
+          ref={tableViewportRef}
+          className="app-scrollbar relative min-h-0 overflow-x-auto overflow-y-visible rounded-xl border border-white/10 bg-black/20"
+          style={{ height: `${tableViewportOuterHeight}px` }}
         >
           <table className="w-max min-w-full border-collapse text-[14px] leading-5">
             <colgroup>
@@ -1628,7 +2919,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
                 const categoryStyle = getCategoryStyle(normalizeCategory(draft.category));
                 const rowBg = categoryStyle.rowStyle.backgroundColor;
                 const saving = Boolean(savingById[event.id]);
-                const isEditing = editingId === event.id;
+                const isRowEditing = editingId === event.id;
 
                 const start = parseDatetimeLocal(draft.startTime) ?? new Date(event.startedAt);
                 const end = parseDatetimeLocal(draft.endTime) ?? new Date(nowTick);
@@ -1648,7 +2939,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
                         def.key,
                         event,
                         draft,
-                        isEditing,
+                        isRowEditing,
                         saving,
                         duration,
                         isActive,
@@ -1660,16 +2951,11 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
               })}
             </tbody>
           </table>
-          <datalist id="history-category-options">
-            {categoryOptions.map((category) => (
-              <option key={category} value={category} />
-            ))}
-          </datalist>
         </div>
       )}
 
       {!loading && !error && filteredSortedEvents.length > 0 ? (
-        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-muted-foreground">
           <span>
             {pageStart + 1} - {pageEnd} of {totalRecords}
           </span>
@@ -1698,6 +2984,14 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
           </div>
         </div>
       ) : null}
+      {statusMenuPortal}
+      {categoryMenuPortal}
+      {viewMenuPortal}
+      {viewDialogPortal}
     </div>
   );
 }
+
+
+
+

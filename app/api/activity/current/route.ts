@@ -5,6 +5,7 @@ import { getSubjectUpn, getViewerRole } from "@/lib/auth";
 type Visibility = "PUBLIC" | "REDACTED";
 type TaskStatus = "NOT_STARTED" | "IN_PROGRESS" | "ON_HOLD" | "COMPLETED";
 
+// Canonical status values accepted by API input and DB writes.
 const TASK_STATUSES = new Set<TaskStatus>([
   "NOT_STARTED",
   "IN_PROGRESS",
@@ -36,6 +37,7 @@ function normalizeStatus(value?: string): TaskStatus {
   return "IN_PROGRESS";
 }
 
+// Returns currently active task for the tracked subject.
 export async function GET() {
   const subjectUpn = getSubjectUpn();
   const role = getViewerRole();
@@ -61,6 +63,7 @@ export async function GET() {
   return NextResponse.json({ current });
 }
 
+// Creates a new activity event and updates activeActivity (or closes immediately if endTime is provided).
 export async function POST(req: Request) {
   try {
     const role = getViewerRole();

@@ -29,6 +29,7 @@ function parseOptionalDate(value: unknown) {
   return parsed;
 }
 
+// Returns recent activity events for the history table.
 export async function GET() {
   const subjectUpn = getSubjectUpn();
   const role = getViewerRole();
@@ -58,6 +59,7 @@ export async function GET() {
   return NextResponse.json({ events });
 }
 
+// Applies row edits from HistoryCard and syncs activeActivity when needed.
 export async function PATCH(req: Request) {
   const role = getViewerRole();
   if (role !== "OWNER") return new Response("Forbidden", { status: 403 });
@@ -84,6 +86,7 @@ export async function PATCH(req: Request) {
 
   if (!existing) return new Response("Event not found", { status: 404 });
 
+    // Detect explicit field presence so partial updates can distinguish "unchanged" from "clear this value".
   const hasTitle = Object.prototype.hasOwnProperty.call(body, "title");
   const hasCategory =
     Object.prototype.hasOwnProperty.call(body, "category") ||

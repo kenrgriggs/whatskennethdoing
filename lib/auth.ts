@@ -1,6 +1,7 @@
 export type ViewerRole = "BASIC" | "MANAGER" | "OWNER";
 
-// Back-compat for existing routes. Subject == the tracked person (you).
+// Subject = whose activity timeline is being tracked.
+// Viewer = who is currently looking at the UI/API.
 export function getUserUpn() {
   return getSubjectUpn();
 }
@@ -15,6 +16,7 @@ export function getViewerUpn() {
   return process.env.DEV_VIEWER_UPN ?? "unknown";
 }
 
+// Basic dev-time authorization model until real auth integration is added.
 export function getViewerRole(): ViewerRole {
   const viewer = getViewerUpn().toLowerCase();
   const owner = (process.env.OWNER_UPN ?? "kenneth").toLowerCase();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   getCategoryLabel,
   getCategoryStyle,
@@ -21,6 +22,7 @@ type ActiveActivity = {
   lastHeartbeatAt: string;
 };
 
+// Shape of /api/activity/suggestions used to drive datalist + quick-fill UX.
 type SuggestionsResponse = {
   titles: string[];
   categories: string[];
@@ -175,6 +177,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
     return knownCategories.filter((item) => !matchingSet.has(item.toLowerCase()));
   }, [knownCategories, matchingCategories, normalizedCategoryQuery]);
 
+    // Refresh current active activity from the server.
   async function refresh() {
     setLoading(true);
     setError(null);
@@ -202,6 +205,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
     }
   }
 
+    // Best-effort suggestions; failures are intentionally non-blocking.
   async function loadSuggestions() {
     try {
       const res = await fetch("/api/activity/suggestions", { cache: "no-store" });
@@ -247,6 +251,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
     setCategoryMenuOpen(false);
   }
 
+    // Creates a new task event (or an immediate start/end event when endTime is set).
   async function setActivity() {
     const normalizedTitle = title.trim();
     const normalizedCategory = category.trim();
@@ -303,6 +308,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
     }
   }
 
+    // Stops the current task by closing the open event and clearing active state.
   async function stopActivity() {
     setSaving(true);
     setError(null);
@@ -363,6 +369,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
   useEffect(() => {
     if (!isModalOpen) return;
 
+    // Close modal quickly with Escape, unless a save request is in flight.
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape" && !saving) {
         setIsModalOpen(false);
@@ -376,86 +383,127 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
 
   return (
     <>
-      <div className="rounded-xl bg-zinc-900/60 p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Now</h2>
+      <div className="rounded-2xl border border-white/10 bg-zinc-900/60 p-5 shadow-[0_20px_50px_-30px_rgba(0,0,0,0.9)] sm:p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-xl font-semibold tracking-tight">Now</h2>
           <span
             className={[
-              "h-3 w-3 rounded-full",
-              isActive ? "bg-green-500" : "bg-zinc-500",
+              "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium",
+              isActive
+                ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
+                : "border-zinc-400/30 bg-zinc-500/10 text-zinc-300",
             ].join(" ")}
             title={isActive ? "Active" : "Inactive"}
-          />
+          >
+            <span
+              className={[
+                "h-2 w-2 rounded-full",
+                isActive ? "bg-emerald-300" : "bg-zinc-400",
+              ].join(" ")}
+            />
+            {isActive ? "Live" : "Idle"}
+          </span>
         </div>
 
-        {loading ? (
-          <p className="text-sm text-muted-foreground">Loading...</p>
-        ) : current ? (
-          <div className="space-y-1">
-            <div className="text-sm font-medium truncate">{current.title}</div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              {currentCategory && currentCategoryStyle ? (
-                <span
-                  className="inline-flex items-center rounded-md border px-2 py-0.5 font-medium"
-                  style={currentCategoryStyle.badgeStyle}
-                >
+        <div className="mt-4">
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          ) : current ? (
+            <div className="space-y-2">
+              <div className="text-base font-semibold leading-snug text-balance">
+                {current.title}
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5 text-xs text-muted-foreground">
+                {currentCategory && currentCategoryStyle ? (
                   <span
-                    className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
-                    style={currentCategoryStyle.dotStyle}
-                  />
-                  {getCategoryLabel(currentCategory)}
+                    className="inline-flex items-center rounded-md border px-2 py-0.5 font-medium"
+                    style={currentCategoryStyle.badgeStyle}
+                  >
+                    <span
+                      className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
+                      style={currentCategoryStyle.dotStyle}
+                    />
+                    {getCategoryLabel(currentCategory)}
+                  </span>
+                ) : null}
+                <span className="inline-flex items-center rounded-full border border-blue-400/35 bg-blue-500/15 px-2 py-0.5 font-medium text-blue-100">
+                  {formatStatusLabel(current.status)}
                 </span>
-              ) : null}
-              <span>{formatStatusLabel(current.status)}</span>
-              {elapsedLabel ? <span>Elapsed {elapsedLabel}</span> : null}
+                {elapsedLabel ? (
+                  <span className="inline-flex items-center rounded-full border border-white/20 bg-white/5 px-2 py-0.5 text-[11px] font-medium">
+                    Elapsed {elapsedLabel}
+                  </span>
+                ) : null}
+              </div>
             </div>
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">No active activity yet.</p>
-        )}
+          ) : (
+            <p className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-muted-foreground">
+              No active activity yet. Start one with the + button or the New Task button below.
+            </p>
+          )}
+        </div>
 
-        {error && !isModalOpen ? <p className="text-sm text-red-500">{error}</p> : null}
+        {error && !isModalOpen ? (
+          <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            {error}
+          </p>
+        ) : null}
 
-        <div className="flex gap-2">
+        <div className="mt-4 flex flex-wrap gap-2">
           <button
             type="button"
-            className="px-4 py-2 rounded-lg border text-sm disabled:opacity-50"
+            className="rounded-lg border border-red-400/35 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-100 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             onClick={stopActivity}
             disabled={saving || !current}
           >
             Stop
           </button>
+          <button
+            type="button"
+            className="rounded-lg border border-white/20 bg-black/25 px-4 py-2 text-sm font-medium transition-colors hover:bg-white/10"
+            onClick={() => {
+              setError(null);
+              setIsModalOpen(true);
+            }}
+          >
+            New Task
+          </button>
         </div>
       </div>
 
-      <button
-        type="button"
-        aria-label="Create task"
-        title="Create task"
-        className="fixed bottom-6 right-6 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full border bg-background text-3xl leading-none shadow-lg transition-colors hover:bg-white/5"
-        onClick={() => {
-          setError(null);
-          setIsModalOpen(true);
-        }}
-      >
-        +
-      </button>
+      {isClient
+        ? createPortal(
+            <button
+              type="button"
+              aria-label="Create task"
+              title="Create task"
+              className="fixed bottom-6 right-6 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full border border-cyan-200/40 bg-zinc-900/85 text-3xl leading-none text-cyan-100 shadow-lg shadow-cyan-900/30 backdrop-blur transition-colors hover:bg-cyan-500/20"
+              onClick={() => {
+                setError(null);
+                setIsModalOpen(true);
+              }}
+            >
+              +
+            </button>,
+            document.body,
+          )
+        : null}
 
       {isModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-16 sm:items-center sm:p-6">
           <button
             type="button"
-            className="absolute inset-0 bg-black/70 backdrop-blur-[1px]"
+            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
             onClick={closeTaskModal}
             aria-label="Close task form"
           />
 
-          <div className="relative z-10 w-full max-w-3xl max-h-[calc(100vh-3rem)] overflow-y-auto rounded-xl border bg-background p-6 shadow-2xl space-y-4">
+          <div className="relative z-10 max-h-[calc(100vh-3rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-white/15 bg-zinc-950/95 p-5 shadow-2xl sm:p-6">
             <div className="flex items-center justify-between gap-4">
-              <h3 className="text-lg font-semibold">Create Task</h3>
+              <h3 className="text-xl font-semibold tracking-tight">Create Task</h3>
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-50"
+                className="rounded-lg border border-white/20 bg-black/20 px-3 py-1.5 text-sm transition-colors hover:bg-white/10 disabled:opacity-50"
                 onClick={closeTaskModal}
                 disabled={saving}
               >
@@ -463,10 +511,14 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
               </button>
             </div>
 
-            {error ? <p className="text-sm text-red-500">{error}</p> : null}
+            {error ? (
+              <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                {error}
+              </p>
+            ) : null}
 
             <form
-              className="space-y-3"
+              className="mt-4 space-y-4"
               onSubmit={(e) => {
                 e.preventDefault();
                 void setActivity();
@@ -479,7 +531,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                   </label>
                   <input
                     ref={taskInputRef}
-                    className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
+                    className="w-full rounded-lg border border-white/20 bg-black/25 px-3 py-2 text-sm outline-none transition-colors focus:border-white/40 focus:bg-black/35"
                     placeholder="What are you working on?"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
@@ -501,7 +553,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                   </label>
                   <input
                     type="datetime-local"
-                    className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
+                    className="w-full rounded-lg border border-white/20 bg-black/25 px-3 py-2 text-sm outline-none transition-colors focus:border-white/40 focus:bg-black/35"
                     value={startTime}
                     onChange={(e) => setStartTime(e.target.value)}
                     disabled={saving}
@@ -514,7 +566,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                   </label>
                   <input
                     type="datetime-local"
-                    className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
+                    className="w-full rounded-lg border border-white/20 bg-black/25 px-3 py-2 text-sm outline-none transition-colors focus:border-white/40 focus:bg-black/35"
                     value={endTime}
                     onChange={(e) => setEndTime(e.target.value)}
                     disabled={saving}
@@ -525,7 +577,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                   <label className="mb-1 block text-xs text-muted-foreground">
                     Duration
                   </label>
-                  <div className="w-full rounded-lg border px-3 py-2 text-sm text-muted-foreground">
+                  <div className="w-full rounded-lg border border-white/20 bg-black/20 px-3 py-2 text-sm text-muted-foreground">
                     {computedDurationLabel}
                   </div>
                 </div>
@@ -535,7 +587,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                     Status
                   </label>
                   <select
-                    className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
+                    className="w-full rounded-lg border border-white/20 bg-black/25 px-3 py-2 text-sm outline-none transition-colors focus:border-white/40 focus:bg-black/35"
                     value={status}
                     onChange={(e) => setStatus(e.target.value as TaskStatus)}
                     disabled={saving}
@@ -553,7 +605,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                     Notes/Description
                   </label>
                   <textarea
-                    className="min-h-20 w-full rounded-lg border bg-background px-3 py-2 text-sm"
+                    className="min-h-20 w-full rounded-lg border border-white/20 bg-black/25 px-3 py-2 text-sm outline-none transition-colors focus:border-white/40 focus:bg-black/35"
                     placeholder="Add details about this task"
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
@@ -569,7 +621,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                   <div className="relative group" ref={categoryMenuRef}>
                     <input
                       ref={categoryInputRef}
-                      className="w-full rounded-lg border bg-background px-3 py-2 pr-10 text-sm"
+                      className="w-full rounded-lg border border-white/20 bg-black/25 px-3 py-2 pr-10 text-sm outline-none transition-colors focus:border-white/40 focus:bg-black/35"
                       placeholder="Category (e.g. Ticket, Project, Personal)"
                       value={category}
                       onChange={(e) => {
@@ -613,7 +665,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                     </button>
 
                     {categoryMenuOpen && knownCategories.length > 0 ? (
-                      <div className="absolute z-30 mt-1 max-h-64 w-full overflow-auto rounded-lg border bg-background shadow-lg">
+                      <div className="absolute z-30 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-white/15 bg-zinc-950/95 shadow-2xl backdrop-blur">
                         {normalizedCategoryQuery ? (
                           <>
                             <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -624,7 +676,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                                 <button
                                   key={`match-${item}`}
                                   type="button"
-                                  className="w-full px-3 py-2 text-left text-sm hover:bg-white/5"
+                                  className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-white/10"
                                   onMouseDown={(e) => {
                                     e.preventDefault();
                                     chooseCategory(item);
@@ -649,7 +701,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                                   <button
                                     key={`other-${item}`}
                                     type="button"
-                                    className="w-full px-3 py-2 text-left text-sm hover:bg-white/5"
+                                    className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-white/10"
                                     onMouseDown={(e) => {
                                       e.preventDefault();
                                       chooseCategory(item);
@@ -666,7 +718,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
                             <button
                               key={`all-${item}`}
                               type="button"
-                              className="w-full px-3 py-2 text-left text-sm hover:bg-white/5"
+                              className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-white/10"
                               onMouseDown={(e) => {
                                 e.preventDefault();
                                 chooseCategory(item);
@@ -685,7 +737,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
               <div className="flex gap-2">
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm disabled:opacity-50"
+                  className="rounded-lg border border-cyan-300/40 bg-cyan-400/20 px-4 py-2 text-sm font-medium text-cyan-100 transition-colors hover:bg-cyan-400/30 disabled:opacity-50"
                   disabled={saving || !title.trim() || !category.trim()}
                 >
                   {saving ? "Saving..." : "Set Activity"}
@@ -693,7 +745,7 @@ export function NowCard({ refreshToken = 0 }: NowCardProps) {
 
                 <button
                   type="button"
-                  className="px-4 py-2 rounded-lg border text-sm disabled:opacity-50"
+                  className="rounded-lg border border-white/20 bg-black/20 px-4 py-2 text-sm transition-colors hover:bg-white/10 disabled:opacity-50"
                   onClick={closeTaskModal}
                   disabled={saving}
                 >

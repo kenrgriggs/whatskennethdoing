@@ -6,6 +6,8 @@
   --scrollbar-track: rgba(24, 24, 27, 0.78);
   --scrollbar-thumb: rgba(113, 113, 122, 0.82);
   --scrollbar-thumb-hover: rgba(161, 161, 170, 0.9);
+  --app-nav-width: min(18rem, 86vw);
+  --app-nav-offset: 0px; /* Updated by NavigationMenu to shift main content. */
 }
 
 @theme inline {
@@ -32,6 +34,7 @@ body {
 html,
 body {
   color-scheme: dark;
+  overflow-x: clip;
 }
 
 /* Keep scrollbars in the same dark palette as the app UI. */
@@ -79,4 +82,12 @@ html::-webkit-scrollbar-button,
 body::-webkit-scrollbar-button,
 .app-scrollbar::-webkit-scrollbar-button {
   background: var(--scrollbar-track);
+}
+
+
+main {
+  /* Keep page content clear of the nav drawer instead of overlaying it. */
+  transform: translateX(var(--app-nav-offset));
+  transition: transform 200ms ease;
+  will-change: transform;
 }

@@ -13,6 +13,7 @@ type AnalyticsCardProps = {
   refreshToken?: number;
 };
 
+// Precomputed view model used directly by the analytics table + bars.
 type AnalyticsRow = {
   category: string;
   label: string;
@@ -42,6 +43,7 @@ export function AnalyticsCard({ refreshToken = 0 }: AnalyticsCardProps) {
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+    // Pull latest aggregated totals from the analytics API route.
   async function refresh() {
     setLoading(true);
     setError(null);
@@ -70,6 +72,7 @@ export function AnalyticsCard({ refreshToken = 0 }: AnalyticsCardProps) {
     };
   }, [data]);
 
+    // Join API totals + category style metadata into render-ready rows.
   const categoryRows = useMemo<AnalyticsRow[]>(() => {
     if (!data) return [];
 

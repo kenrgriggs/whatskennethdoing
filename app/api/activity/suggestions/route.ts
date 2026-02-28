@@ -7,6 +7,7 @@ type TaskNotesPair = {
   notes: string;
 };
 
+// Keeps suggestion lists compact, unique, and case-insensitive.
 function dedupeNonEmpty(values: string[]) {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -44,6 +45,7 @@ function buildTaskNotes(values: Array<{ task: string | null; notes: string | nul
   return out.slice(0, 100);
 }
 
+// Supplies task/category suggestions and note templates for quick task entry.
 export async function GET() {
   const role = getViewerRole();
   if (role !== "OWNER") return new Response("Forbidden", { status: 403 });

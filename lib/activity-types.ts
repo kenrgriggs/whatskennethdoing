@@ -6,6 +6,7 @@ type CategoryColor = {
   lightness: number;
 };
 
+// Stable palette for common categories; unknown categories get deterministic colors.
 const KNOWN_CATEGORY_COLORS: Record<string, CategoryColor> = {
   TICKET: { hue: 38, saturation: 92, lightness: 58 },
   PROJECT: { hue: 220, saturation: 92, lightness: 58 },
@@ -20,6 +21,7 @@ export type CategoryStyle = {
   dotStyle: CSSProperties;
 };
 
+// Small deterministic hash to keep generated colors consistent between sessions.
 function hashString(value: string) {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -50,6 +52,7 @@ export function getCategoryLabel(category: string | null | undefined) {
   return normalizeCategory(category);
 }
 
+// Returns badge, row, and dot styles so all cards render category colors consistently.
 export function getCategoryStyle(category: string | null | undefined): CategoryStyle {
   const { hue, saturation, lightness } = getCategoryColor(normalizeCategory(category));
 

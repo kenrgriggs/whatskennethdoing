@@ -1,9 +1,11 @@
 import { PrismaClient } from "@/generated/prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
+// Reuse a single Prisma client in dev to avoid hot-reload connection churn.
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 const url = process.env.DATABASE_URL ?? "";
+// SQLite adapter keeps Prisma on better-sqlite3 for local speed and simplicity.
 const adapter = new PrismaBetterSqlite3({ url });
 
 export const prisma =

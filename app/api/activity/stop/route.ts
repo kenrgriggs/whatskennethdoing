@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getSubjectUpn, getViewerRole } from "@/lib/auth";
 
+// Stops the current task by ending the open event and clearing activeActivity.
 export async function POST() {
   const role = getViewerRole();
   if (role !== "OWNER") return new Response("Forbidden", { status: 403 });

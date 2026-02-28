@@ -1,5 +1,6 @@
 import { AnalyticsCard } from "@/components/AnalyticsCard";
 
+// Analytics page wrapper. Detailed calculations live in AnalyticsCard.
 export default function AnalyticsPage() {
   return (
     <main className="min-h-screen bg-background text-foreground">
