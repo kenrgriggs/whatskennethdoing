@@ -68,11 +68,6 @@ type SavedHistoryView = {
 
 type ViewDialogState =
   | {
-      kind: "create";
-      draftName: string;
-      error: string | null;
-    }
-  | {
       kind: "rename";
       viewId: string;
       draftName: string;
@@ -82,6 +77,8 @@ type ViewDialogState =
       kind: "delete";
       viewId: string;
     };
+
+type BatchEditField = "status" | "category" | "project";
 
 type ColumnDef = {
   key: ColumnKey;
@@ -119,6 +116,11 @@ const DENSITY_ROW_HEIGHT: Record<DisplayDensity, number> = {
   comfort: 46,
 };
 
+const BATCH_EDIT_FIELD_OPTIONS: Array<{ value: BatchEditField; label: string }> = [
+  { value: "status", label: "Status" },
+  { value: "category", label: "Category" },
+  { value: "project", label: "Project" },
+];
 function getStatusPillClassName(status: TaskStatus) {
   switch (status) {
     case "NOT_STARTED":
@@ -580,6 +582,11 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   const [viewMenuPosition, setViewMenuPosition] =
     useState<StatusMenuPosition | null>(null);
   const [viewDialog, setViewDialog] = useState<ViewDialogState | null>(null);
+  const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
+  const [batchEditField, setBatchEditField] = useState<BatchEditField>("status");
+  const [batchEditText, setBatchEditText] = useState("");
+  const [batchEditStatus, setBatchEditStatus] = useState<TaskStatus>("IN_PROGRESS");
+  const [batchSaving, setBatchSaving] = useState(false);
   const loadedColumnOrderRef = useRef(false);
   const loadedSavedViewsRef = useRef(false);
   const hydratedViewFromUrlRef = useRef(false);
@@ -596,6 +603,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   const headerRowRef = useRef<HTMLTableRowElement | null>(null);
   const firstBodyRowRef = useRef<HTMLTableRowElement | null>(null);
   const tableViewportRef = useRef<HTMLDivElement | null>(null);
+  const selectAllVisibleRef = useRef<HTMLInputElement | null>(null);
   const [measuredHeaderRowHeight, setMeasuredHeaderRowHeight] = useState(0);
   const [measuredBodyRowHeight, setMeasuredBodyRowHeight] = useState(0);
   const [tableHeightCompensation, setTableHeightCompensation] = useState(0);
@@ -788,6 +796,123 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     await saveRow(event);
   }
 
+  function toggleRowSelection(rowId: string) {
+    setSelectedRowIds((previous) => {
+      if (previous.includes(rowId)) {
+        return previous.filter((id) => id !== rowId);
+      }
+      return [...previous, rowId];
+    });
+  }
+
+  function toggleVisiblePageSelection() {
+    const pageIds = pagedEvents.map((event) => event.id);
+    if (!pageIds.length) return;
+
+    const allSelected = pageIds.every((id) => selectedRowIdSet.has(id));
+    setSelectedRowIds((previous) => {
+      if (allSelected) {
+        return previous.filter((id) => !pageIds.includes(id));
+      }
+
+      const next = new Set(previous);
+      for (const id of pageIds) next.add(id);
+      return Array.from(next);
+    });
+  }
+
+  async function applyBatchEdit() {
+    if (batchSaving || selectedRowIds.length === 0) return;
+
+    const selectedEvents = events.filter((event) => selectedRowIdSet.has(event.id));
+    if (selectedEvents.length === 0) {
+      setSelectedRowIds([]);
+      return;
+    }
+
+    if (batchEditField === "category" && !batchEditText.trim()) {
+      setError("Category cannot be empty when applying a bulk edit.");
+      return;
+    }
+
+    setBatchSaving(true);
+    setError(null);
+
+    const results = await Promise.all(
+      selectedEvents.map(async (event) => {
+        try {
+          const payload: Record<string, string> = { id: event.id };
+          if (batchEditField === "status") {
+            payload.status = batchEditStatus;
+          } else if (batchEditField === "category") {
+            payload.category = batchEditText.trim();
+          } else {
+            payload.project = batchEditText.trim();
+          }
+
+          const res = await fetch("/api/activity/events", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!res.ok) {
+            let message = `Failed to update row (${res.status})`;
+            try {
+              const body = (await res.json()) as { error?: string };
+              if (body.error) message = body.error;
+            } catch {
+              const text = await res.text();
+              if (text) message = text;
+            }
+            return { id: event.id, ok: false as const, message };
+          }
+
+          const data = (await res.json()) as { event: ActivityEvent };
+          return { id: event.id, ok: true as const, event: data.event };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Unknown error";
+          return { id: event.id, ok: false as const, message };
+        }
+      }),
+    );
+
+    const updated = results.filter((result) => result.ok).map((result) => result.event);
+    const failed = results.filter((result) => !result.ok);
+
+    if (updated.length) {
+      const updatedById = new Map(updated.map((event) => [event.id, event]));
+      setEvents((previous) =>
+        previous.map((event) => updatedById.get(event.id) ?? event),
+      );
+      setDrafts((previous) => {
+        const next = { ...previous };
+        for (const event of updated) {
+          next[event.id] = toDraft(event);
+        }
+        return next;
+      });
+      setEditingId(null);
+      setEditingKey(null);
+      setOpenStatusMenuId(null);
+      setOpenCategoryMenuId(null);
+    }
+
+    if (failed.length > 0) {
+      const failedIds = failed.map((result) => result.id);
+      setSelectedRowIds(failedIds);
+      setError(`Updated ${updated.length} row(s). ${failed.length} row(s) failed.`);
+    } else {
+      setSelectedRowIds([]);
+      if (batchEditField !== "status") {
+        setBatchEditText("");
+      }
+      setError(null);
+    }
+
+    setBatchSaving(false);
+  }
+
   function beginResize(key: ColumnKey, event: React.MouseEvent<HTMLButtonElement>) {
     event.preventDefault();
     event.stopPropagation();
@@ -871,6 +996,13 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     return nextName;
   }
 
+  function createSavedViewId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return `view-${Date.now()}`;
+  }
+
   function addSavedViewFromCurrentFilters() {
     const existing = savedViews.find((item) => areFiltersEqual(item.filters, filters));
     if (existing) {
@@ -878,11 +1010,15 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
       return;
     }
 
-    setViewDialog({
-      kind: "create",
-      draftName: `View ${savedViews.length + 1}`,
-      error: null,
-    });
+    const nextView: SavedHistoryView = {
+      id: createSavedViewId(),
+      name: getUniqueSavedViewName(`View ${savedViews.length + 1}`),
+      filters: cloneFilters(filters),
+    };
+
+    setSavedViews((previous) => [...previous, nextView]);
+    setActiveViewId(nextView.id);
+    setOpenFilterKey(null);
   }
 
   function renameSavedView(viewId: string) {
@@ -926,26 +1062,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
       return;
     }
 
-    const nextName = getUniqueSavedViewName(
-      baseName,
-      viewDialog.kind === "rename" ? viewDialog.viewId : undefined,
-    );
-
-    if (viewDialog.kind === "create") {
-      const nextView: SavedHistoryView = {
-        id:
-          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-            ? crypto.randomUUID()
-            : `view-${Date.now()}`,
-        name: nextName,
-        filters: cloneFilters(filters),
-      };
-
-      setSavedViews((previous) => [...previous, nextView]);
-      setActiveViewId(nextView.id);
-      setViewDialog(null);
-      return;
-    }
+    const nextName = getUniqueSavedViewName(baseName, viewDialog.viewId);
 
     const targetId = viewDialog.viewId;
     setSavedViews((previous) =>
@@ -966,10 +1083,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     if (!view) return;
 
     const nextView: SavedHistoryView = {
-      id:
-        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-          ? crypto.randomUUID()
-          : `view-${Date.now()}`,
+      id: createSavedViewId(),
       name: getUniqueSavedViewName(`${view.name} Copy`),
       filters: cloneFilters(view.filters),
     };
@@ -1396,6 +1510,13 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     }
   }, [editFocusTarget, editingId, editingKey]);
 
+  useEffect(() => {
+    setSelectedRowIds((previous) =>
+      previous.filter((id) => events.some((event) => event.id === id)),
+    );
+  }, [events]);
+
+
   const categoryOptions = useMemo(() => {
     const out = new Set<string>();
     for (const event of events) {
@@ -1478,6 +1599,13 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   const pageStart = totalRecords === 0 ? 0 : (safePage - 1) * recordsPerPage;
   const pageEnd = Math.min(totalRecords, pageStart + recordsPerPage);
   const pagedEvents = filteredSortedEvents.slice(pageStart, pageEnd);
+  const selectedRowIdSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
+  const selectedRowCount = selectedRowIds.length;
+  const visibleRowIds = pagedEvents.map((event) => event.id);
+  const allVisibleRowsSelected =
+    visibleRowIds.length > 0 && visibleRowIds.every((id) => selectedRowIdSet.has(id));
+  const someVisibleRowsSelected =
+    visibleRowIds.some((id) => selectedRowIdSet.has(id)) && !allVisibleRowsSelected;
   const fallbackBodyRowHeight = DENSITY_ROW_HEIGHT[displayDensity];
   const fallbackHeaderRowHeight = displayDensity === "compact" ? 40 : 48;
   const bodyRowHeight = measuredBodyRowHeight || fallbackBodyRowHeight;
@@ -1763,7 +1891,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
       : null;
 
   const viewDialogTarget =
-    viewDialog && viewDialog.kind !== "create"
+    viewDialog
       ? savedViews.find((item) => item.id === viewDialog.viewId) ?? null
       : null;
 
@@ -1781,9 +1909,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
               <h3 className="text-xl font-semibold tracking-tight">
                 {viewDialog.kind === "delete"
                   ? "Delete this view?"
-                  : viewDialog.kind === "rename"
-                    ? "Rename view"
-                    : "Create new view"}
+                  : "Rename view"}
               </h3>
 
               {viewDialog.kind === "delete" ? (
@@ -1833,9 +1959,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
                 >
                   {viewDialog.kind === "delete"
                     ? "Delete view"
-                    : viewDialog.kind === "rename"
-                      ? "Save name"
-                      : "Create view"}
+                    : "Save name"}
                 </button>
                 <button
                   type="button"
@@ -2531,12 +2655,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
   return (
     <div className="flex min-h-0 flex-col space-y-3 rounded-2xl border border-white/10 bg-zinc-900/60 p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
-          <h2 className="text-xl font-semibold tracking-tight">History</h2>
-          <p className="text-xs text-muted-foreground">
-            Review, edit, and filter tracked work sessions.
-          </p>
-        </div>
+        <div><h2 className="text-xl font-semibold tracking-tight">History</h2></div>
         <div className="relative flex items-center gap-2">
           <button
             type="button"
@@ -2798,71 +2917,86 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         </div>
       </div>
 
-      <div className="rounded-xl border border-white/10 bg-black/20 p-2">
-        <div className="app-scrollbar flex items-center gap-2 overflow-x-auto">
+      <div className="px-1">
+        <div className="app-scrollbar flex items-center gap-1 overflow-x-auto">
           <button
             type="button"
             className={[
               "shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
               activeViewId === DEFAULT_VIEW_ID
                 ? "border-cyan-300/40 bg-cyan-400/20 text-cyan-100"
-                : "border-white/20 bg-black/30 text-zinc-200 hover:bg-white/10",
+                : "border-transparent bg-transparent text-zinc-300 hover:border-white/20 hover:bg-white/10 hover:text-white",
             ].join(" ")}
             onClick={() => applySavedView(DEFAULT_VIEW_ID)}
           >
             All Tasks
           </button>
 
-          {savedViews.map((view) => (
-            <div key={view.id} className="inline-flex items-center rounded-md border border-white/20 bg-black/30">
-              <button
-                type="button"
+          {savedViews.map((view) => {
+            const isActive = activeViewId === view.id;
+            const isMenuOpen = openViewMenuId === view.id;
+
+            return (
+              <div
+                key={view.id}
                 className={[
-                  "shrink-0 rounded-l-md px-3 py-1.5 text-xs font-medium transition-colors",
-                  activeViewId === view.id
-                    ? "bg-cyan-400/20 text-cyan-100"
-                    : "text-zinc-200 hover:bg-white/10",
+                  "group inline-flex items-center rounded-md border transition-colors",
+                  isActive || isMenuOpen
+                    ? "border-white/20 bg-white/10"
+                    : "border-transparent bg-transparent hover:border-white/20 hover:bg-white/8",
                 ].join(" ")}
-                onClick={() => applySavedView(view.id)}
               >
-                {view.name}
-              </button>
-              <button
-                type="button"
-                data-view-options-btn="true"
-                ref={(node) => {
-                  viewMenuButtonRefs.current[view.id] = node;
-                }}
-                className={[
-                  "inline-flex h-full items-center rounded-r-md border-l border-white/15 px-2 text-zinc-300 transition-colors hover:bg-white/10 hover:text-white",
-                  openViewMenuId === view.id ? "bg-white/10 text-white" : "",
-                ].join(" ")}
-                aria-label={`Open options for ${view.name}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (openViewMenuId === view.id) {
-                    setOpenViewMenuId(null);
-                    return;
-                  }
-                  setViewMenuPosition(getViewMenuPositionFromTrigger(event.currentTarget));
-                  setOpenViewMenuId(view.id);
-                }}
-              >
-                <svg
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  className="h-3.5 w-3.5"
-                  aria-hidden="true"
+                <button
+                  type="button"
+                  className={[
+                    "shrink-0 rounded-l-md px-3 py-1.5 text-xs font-medium transition-colors",
+                    isActive
+                      ? "text-cyan-100"
+                      : "text-zinc-200 hover:text-white",
+                  ].join(" ")}
+                  onClick={() => applySavedView(view.id)}
                 >
-                  <circle cx="5" cy="10" r="1" fill="currentColor" stroke="none" />
-                  <circle cx="10" cy="10" r="1" fill="currentColor" stroke="none" />
-                  <circle cx="15" cy="10" r="1" fill="currentColor" stroke="none" />
-                </svg>
-              </button>
-            </div>
-          ))}
+                  {view.name}
+                </button>
+                <button
+                  type="button"
+                  data-view-options-btn="true"
+                  ref={(node) => {
+                    viewMenuButtonRefs.current[view.id] = node;
+                  }}
+                  className={[
+                    "inline-flex h-full items-center rounded-r-md border-l px-2 transition-all",
+                    isMenuOpen
+                      ? "border-white/20 bg-white/10 text-white"
+                      : "border-transparent text-zinc-300 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-white/10 hover:text-white",
+                  ].join(" ")}
+                  aria-label={`Open options for ${view.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (openViewMenuId === view.id) {
+                      setOpenViewMenuId(null);
+                      return;
+                    }
+                    setViewMenuPosition(getViewMenuPositionFromTrigger(event.currentTarget));
+                    setOpenViewMenuId(view.id);
+                  }}
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    className="h-3.5 w-3.5"
+                    aria-hidden="true"
+                  >
+                    <circle cx="5" cy="10" r="1" fill="currentColor" stroke="none" />
+                    <circle cx="10" cy="10" r="1" fill="currentColor" stroke="none" />
+                    <circle cx="15" cy="10" r="1" fill="currentColor" stroke="none" />
+                  </svg>
+                </button>
+              </div>
+            );
+          })}
 
           {hasUnsavedFilters ? (
             <span className="shrink-0 rounded-md border border-amber-400/30 bg-amber-400/15 px-3 py-1.5 text-xs font-medium text-amber-100">
@@ -2890,6 +3024,69 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         </div>
       </div>
 
+      {selectedRowCount > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-cyan-300/30 bg-cyan-500/10 px-3 py-2 text-xs">
+          <span className="font-medium text-cyan-100">{selectedRowCount} selected</span>
+
+          <select
+            value={batchEditField}
+            onChange={(event) => setBatchEditField(event.target.value as BatchEditField)}
+            className="rounded-md border border-white/20 bg-black/35 px-2.5 py-1.5 text-xs text-white outline-none"
+            disabled={batchSaving}
+          >
+            {BATCH_EDIT_FIELD_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+
+          {batchEditField === "status" ? (
+            <select
+              value={batchEditStatus}
+              onChange={(event) => setBatchEditStatus(event.target.value as TaskStatus)}
+              className="rounded-md border border-white/20 bg-black/35 px-2.5 py-1.5 text-xs text-white outline-none"
+              disabled={batchSaving}
+            >
+              {STATUS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={batchEditText}
+              onChange={(event) => setBatchEditText(event.target.value)}
+              placeholder={batchEditField === "category" ? "Category" : "Project (empty clears)"}
+              className="min-w-44 rounded-md border border-white/20 bg-black/35 px-2.5 py-1.5 text-xs text-white placeholder:text-zinc-500 outline-none"
+              disabled={batchSaving}
+            />
+          )}
+
+          <button
+            type="button"
+            className="rounded-md border border-cyan-300/35 bg-cyan-400/20 px-2.5 py-1.5 text-xs font-medium text-cyan-100 transition-colors hover:bg-cyan-400/30 disabled:opacity-60"
+            onClick={() => {
+              void applyBatchEdit();
+            }}
+            disabled={batchSaving || selectedRowCount === 0}
+          >
+            {batchSaving ? "Applying..." : "Apply to selected"}
+          </button>
+
+          <button
+            type="button"
+            className="rounded-md border border-white/20 bg-black/35 px-2.5 py-1.5 text-xs text-zinc-200 transition-colors hover:bg-white/10"
+            onClick={() => setSelectedRowIds([])}
+            disabled={batchSaving}
+          >
+            Clear selection
+          </button>
+        </div>
+      ) : null}
+
       {loading ? (
         <p className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-muted-foreground">Loading history...</p>
       ) : error ? (
@@ -2904,12 +3101,27 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
         >
           <table className="w-max min-w-full border-collapse text-[14px] leading-5">
             <colgroup>
+              <col style={{ width: "44px" }} />
               {orderedColumnDefs.map((def) => (
                 <col key={def.key} style={{ width: `${columnWidths[def.key]}px` }} />
               ))}
             </colgroup>
             <thead>
               <tr ref={headerRowRef}>
+                <th className="border-b border-r border-white/10 bg-white/[0.03] px-2 py-1.5 text-left">
+                  <input
+                    ref={(node) => {
+                      selectAllVisibleRef.current = node;
+                      if (node) node.indeterminate = someVisibleRowsSelected;
+                    }}
+                    type="checkbox"
+                    className="h-3.5 w-3.5 rounded border border-white/25 bg-black/40 align-middle"
+                    checked={allVisibleRowsSelected}
+                    onChange={toggleVisiblePageSelection}
+                    disabled={!visibleRowIds.length}
+                    aria-label="Select all rows on this page"
+                  />
+                </th>
                 {orderedColumnDefs.map((def) => renderHeader(def))}
               </tr>
             </thead>
@@ -2925,6 +3137,7 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
                 const end = parseDatetimeLocal(draft.endTime) ?? new Date(nowTick);
                 const duration = durationLabel(start, end);
                 const isActive = !draft.endTime;
+                const isSelected = selectedRowIdSet.has(event.id);
 
                 return (
                   <tr
@@ -2934,6 +3147,15 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
                     style={{ backgroundColor: rowBg }}
                     className="border-b border-white/10 align-top"
                   >
+                    <td className={`border-r border-white/10 ${cellPaddingClass} text-center`}>
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 rounded border border-white/25 bg-black/45 align-middle"
+                        checked={isSelected}
+                        onChange={() => toggleRowSelection(event.id)}
+                        aria-label={`Select task ${event.title}`}
+                      />
+                    </td>
                     {orderedColumnDefs.map((def) =>
                       renderBodyCell(
                         def.key,
@@ -2991,7 +3213,6 @@ export function HistoryCard({ refreshToken = 0 }: HistoryCardProps) {
     </div>
   );
 }
-
 
 
 
